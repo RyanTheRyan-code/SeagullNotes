@@ -1,4 +1,4 @@
 var CONFIG = {
   REPO_OWNER: 'RyanTheRyan-code',
-  REPO_NAME: 'SeagullNotes'
+  REPO_NAME: 'privateNotes'
 };

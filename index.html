@@ -28,7 +28,7 @@
     (function () {
       var TOKEN_KEY = 'github_token';
       var REPO_OWNER = typeof CONFIG !== 'undefined' && CONFIG.REPO_OWNER ? CONFIG.REPO_OWNER : 'YOUR_GITHUB_USERNAME';
-      var REPO_NAME = typeof CONFIG !== 'undefined' && CONFIG.REPO_NAME ? CONFIG.REPO_NAME : 'SeagullNotes';
+      var REPO_NAME = typeof CONFIG !== 'undefined' && CONFIG.REPO_NAME ? CONFIG.REPO_NAME : 'privateNotes';
 
       function getToken() {
         return localStorage.getItem(TOKEN_KEY);
