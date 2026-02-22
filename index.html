@@ -53,6 +53,7 @@
       <h3>Notes</h3>
       <button type="button" id="newFolderBtn">New folder</button>
       <button type="button" id="newNoteBtn">New note</button>
+      <button type="button" id="refreshNotesBtn">Refresh list</button>
       <div id="breadcrumb"></div>
       <ul id="notesList"></ul>
     </div>
@@ -484,6 +485,10 @@
       document.getElementById('deleteBtn').addEventListener('click', deleteNote);
       document.getElementById('newFolderBtn').addEventListener('click', newFolder);
       document.getElementById('newNoteBtn').addEventListener('click', newNote);
+      document.getElementById('refreshNotesBtn').addEventListener('click', function () {
+        refreshNotesList();
+        showStatus('List refreshed.', true);
+      });
       document.getElementById('previewToggle').addEventListener('click', function () { togglePreview(); });
       document.getElementById('addImageBtn').addEventListener('click', addImage);
 
