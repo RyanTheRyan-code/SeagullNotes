@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Whiteboard Sandbox</title>
+  <link rel="stylesheet" href="https://unpkg.com/js-draw/dist/mjs/js-draw.css">
+  <style>
+    body, html { margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; background: #fff; }
+    #editor-container { width: 100vw; height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="editor-container"></div>
+  <script type="module">
+    import Editor from 'https://cdn.jsdelivr.net/npm/js-draw/+esm';
+    const editor = new Editor(document.getElementById('editor-container'));
+    editor.addToolbar();
+
+    // Listen for messages from SeagullNotes
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (data.type === 'LOAD_SVG') {
+        editor.loadFromSVG(data.payload);
+      } else if (data.type === 'REQUEST_SAVE') {
+        const svgElem = editor.toSVG();
+        
+        // Force aspect ratio so it scales well in the sticky note
+        svgElem.setAttribute('width', '100%');
+        svgElem.setAttribute('height', '100%');
+        
+        // Send the final SVG back to the main app
+        window.parent.postMessage({ type: 'SAVE_DATA', payload: svgElem.outerHTML }, '*');
+      }
+    });
+
+    // Tell the parent app we are loaded and ready for data
+    window.parent.postMessage({ type: 'READY' }, '*');
+  </script>
+</body>
+</html>

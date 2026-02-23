@@ -5,34 +5,7 @@
   <title>SeagullNotes</title>
   <script src="config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <style>
-    body { font-family: sans-serif; margin: 0; }
-    #top { padding: 8px 12px; border-bottom: 1px solid #ccc; background: #f8f8f8; }
-    #repoRow { margin-bottom: 6px; }
-    #repoRow input { width: 120px; margin-right: 4px; }
-    #repoDisplay { font-size: 0.9em; color: #666; margin: 4px 0; }
-    #settings { margin-bottom: 6px; }
-    #settings input, #settings button { margin-right: 6px; }
-    #mainLayout { display: flex; min-height: 80vh; }
-    #sidebar { width: 240px; border-right: 1px solid #ccc; padding: 10px; overflow-y: auto; }
-    #sidebar h3 { margin: 0 0 8px 0; font-size: 1em; }
-    #sidebar button { margin-bottom: 6px; }
-    #notesList { list-style: none; padding: 0; margin: 0; }
-    #notesList li { padding: 4px 8px; cursor: pointer; border-radius: 3px; }
-    #notesList li:hover { background: #eee; }
-    #notesList li.folder { font-weight: bold; }
-    #notesList li.file { padding-left: 16px; }
-    #breadcrumb { font-size: 0.85em; color: #666; margin-bottom: 8px; }
-    #content { flex: 1; padding: 12px; display: flex; flex-direction: column; }
-    #toolbar { margin-bottom: 8px; }
-    #toolbar button { margin-right: 8px; }
-    #pathInput { width: 100%; max-width: 400px; margin-bottom: 6px; padding: 4px; }
-    #noteText { flex: 1; min-height: 200px; font-family: inherit; padding: 8px; }
-    #previewArea { flex: 1; min-height: 200px; padding: 12px; border: 1px solid #ccc; border-radius: 4px; background: #fff; overflow-y: auto; }
-    #previewArea img { max-width: 100%; }
-    #status { margin-left: 8px; font-size: 0.9em; }
-    .hidden { display: none !important; }
-  </style>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="top">
@@ -48,11 +21,13 @@
       <button type="button" id="logoutBtn">Log out</button>
     </div>
   </div>
+  
   <div id="mainLayout">
     <div id="sidebar">
       <h3>Notes</h3>
       <button type="button" id="newFolderBtn">New folder</button>
       <button type="button" id="newNoteBtn">New note</button>
+      <button type="button" id="newWhiteboardBtn">New whiteboard</button>
       <button type="button" id="refreshNotesBtn">Refresh list</button>
       <div id="breadcrumb"></div>
       <ul id="notesList"></ul>
@@ -62,438 +37,36 @@
         <button type="button" id="saveBtn">Save</button>
         <button type="button" id="deleteBtn">Delete</button>
         <button type="button" id="addImageBtn">Add image</button>
+        <button type="button" id="addStickyBtn">Add sticky</button>
         <button type="button" id="previewToggle">Preview</button>
+        <button type="button" id="addDrawStickyBtn">Draw Sticky</button>
         <span id="status"></span>
       </div>
       <input type="text" id="pathInput" placeholder="path e.g. work/meeting.md">
       <textarea id="noteText" placeholder="Your note..."></textarea>
       <div id="previewArea" class="hidden"></div>
+      
+      <div id="whiteboardArea" class="hidden">
+        <svg id="mainWhiteboardSvg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"></svg>
+      </div>
+      
       <input type="file" id="imageFileInput" accept="image/*" style="display: none">
     </div>
   </div>
 
-  <script>
-    (function () {
-      var TOKEN_KEY = 'github_token';
-      var REPO_OWNER_KEY = 'repo_owner';
-      var REPO_NAME_KEY = 'repo_name';
-      var NOTES_DIR = 'notes';
+  <div id="drawScreen" class="hidden">
+    <div id="drawScreenWrapper">
+      <div id="drawScreenHeader">
+        <button type="button" id="clearDrawBtn" style="color: red; margin-right: auto;">Clear Board</button>
+        <button type="button" id="saveDrawScreenBtn" style="font-weight: bold;">Save & Close</button>
+        <button type="button" id="cancelDrawScreenBtn">Cancel</button>
+      </div>
+      <div id="drawScreenContent">
+         <svg id="nativeSvgBoard" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"></svg>
+      </div>
+    </div>
+  </div>
 
-      var repoOwner = localStorage.getItem(REPO_OWNER_KEY) || (typeof CONFIG !== 'undefined' && CONFIG.REPO_OWNER ? CONFIG.REPO_OWNER : 'YOUR_GITHUB_USERNAME');
-      var repoName = localStorage.getItem(REPO_NAME_KEY) || (typeof CONFIG !== 'undefined' && CONFIG.REPO_NAME ? CONFIG.REPO_NAME : 'SeagullNotes');
-      var defaultBranch = 'main';
-      var currentTree = [];
-      var currentFolder = '';
-      var openFilePath = null;
-      var openFileSha = null;
-      var previewOn = false;
-
-      function getToken() { return localStorage.getItem(TOKEN_KEY); }
-      function setToken(value) {
-        if (value && value.trim()) {
-          localStorage.setItem(TOKEN_KEY, value.trim());
-          document.getElementById('tokenInput').value = '';
-          showStatus('Token saved.', true);
-        }
-      }
-      function clearToken() {
-        localStorage.removeItem(TOKEN_KEY);
-        document.getElementById('tokenInput').value = '';
-        document.getElementById('noteText').value = '';
-        document.getElementById('pathInput').value = '';
-        openFilePath = null;
-        openFileSha = null;
-        showStatus('Logged out.', true);
-        refreshNotesList();
-      }
-
-      function getRepo() { return { owner: repoOwner, name: repoName }; }
-      function setRepo(owner, name) {
-        repoOwner = (owner || '').trim();
-        repoName = (name || '').trim();
-        if (repoOwner) localStorage.setItem(REPO_OWNER_KEY, repoOwner);
-        if (repoName) localStorage.setItem(REPO_NAME_KEY, repoName);
-        updateRepoDisplay();
-        refreshNotesList();
-        openFilePath = null;
-        openFileSha = null;
-      }
-      function updateRepoDisplay() {
-        var el = document.getElementById('repoDisplay');
-        el.textContent = 'Saving to: ' + repoOwner + '/' + repoName +
-          (repoOwner === 'YOUR_GITHUB_USERNAME' ? ' — set above and click Use repo' : '');
-      }
-
-      function base64Utf8(text) {
-        return btoa(unescape(encodeURIComponent(text || '')));
-      }
-      function decodeBase64Utf8(b64) {
-        try {
-          return decodeURIComponent(escape(atob(b64)));
-        } catch (e) {
-          return atob(b64);
-        }
-      }
-
-      function apiUrl(path) {
-        return 'https://api.github.com/repos/' + repoOwner + '/' + repoName + (path ? '/' + path : '');
-      }
-      function authHeaders() {
-        return { 'Authorization': 'Bearer ' + getToken(), 'Accept': 'application/vnd.github+json' };
-      }
-
-      function ensureNotesDir() {
-        return fetch(apiUrl('contents/' + NOTES_DIR), { headers: authHeaders() })
-          .then(function (res) {
-            if (res.status === 404) {
-              return fetch(apiUrl('contents/' + NOTES_DIR + '/.gitkeep'), {
-                method: 'PUT',
-                headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-                body: JSON.stringify({ message: 'Create notes directory', content: btoa('') })
-              }).then(function (r) { return r.ok ? Promise.resolve() : r.json().then(function (d) { throw new Error(d.message || 'Failed to create notes/'); }); });
-            }
-            return Promise.resolve();
-          });
-      }
-
-      function fetchDefaultBranch() {
-        return fetch(apiUrl(''), { headers: authHeaders() })
-          .then(function (res) { return res.ok ? res.json() : Promise.resolve(null); })
-          .then(function (data) {
-            if (data && data.default_branch) defaultBranch = data.default_branch;
-          });
-      }
-
-      function showStatus(msg, isOk) {
-        var el = document.getElementById('status');
-        el.textContent = msg;
-        el.style.color = isOk ? 'green' : 'red';
-      }
-
-      function defaultFilename() {
-        var now = new Date();
-        var y = now.getFullYear(), m = String(now.getMonth() + 1).padStart(2, '0'), d = String(now.getDate()).padStart(2, '0');
-        var h = String(now.getHours()).padStart(2, '0'), min = String(now.getMinutes()).padStart(2, '0');
-        return 'note-' + y + '-' + m + '-' + d + '-' + h + min + '.md';
-      }
-
-      function refreshNotesList() {
-        var token = getToken();
-        if (!token) {
-          document.getElementById('notesList').innerHTML = '<li>Set token to list notes</li>';
-          document.getElementById('breadcrumb').textContent = '';
-          return;
-        }
-        fetchDefaultBranch().then(function () {
-          return fetch(apiUrl('git/trees/' + defaultBranch + '?recursive=1'), { headers: authHeaders() });
-        }).then(function (res) {
-          if (!res.ok) {
-            document.getElementById('notesList').innerHTML = '<li>Could not load tree</li>';
-            return;
-          }
-          return res.json().then(function (data) {
-            var tree = (data.tree || []).filter(function (e) {
-              return e.path === NOTES_DIR || (e.path.indexOf(NOTES_DIR + '/') === 0 && e.path !== NOTES_DIR + '/.gitkeep');
-            });
-            currentTree = tree;
-            renderNotesList(tree);
-          });
-        }).catch(function () {
-          document.getElementById('notesList').innerHTML = '<li>Error loading notes</li>';
-        });
-      }
-
-      function renderNotesList(tree) {
-        var prefix = NOTES_DIR + (currentFolder ? '/' + currentFolder : '') + '/';
-        var dirs = [];
-        var files = [];
-        tree.forEach(function (e) {
-          if (e.path === NOTES_DIR + '/.gitkeep' || !e.path.startsWith(prefix)) return;
-          var name = e.path.slice(prefix.length);
-          if (name.indexOf('/') >= 0) return;
-          if (e.type === 'tree') dirs.push(name);
-          else files.push(name);
-        });
-        dirs.sort();
-        files.sort();
-        var html = '';
-        if (currentFolder) {
-          html += '<li class="folder" data-path="" data-type="dir">..</li>';
-        }
-        dirs.forEach(function (d) {
-          html += '<li class="folder" data-path="' + (currentFolder ? currentFolder + '/' : '') + d + '" data-type="dir">' + d + '/</li>';
-        });
-        files.forEach(function (f) {
-          html += '<li class="file" data-path="' + (currentFolder ? currentFolder + '/' : '') + f + '" data-type="file">' + f + '</li>';
-        });
-        if (html === '') html = '<li>No notes yet</li>';
-        document.getElementById('notesList').innerHTML = html;
-        document.getElementById('breadcrumb').textContent = NOTES_DIR + (currentFolder ? '/' + currentFolder : '') + '/';
-
-        document.querySelectorAll('#notesList li[data-path]').forEach(function (li) {
-          li.addEventListener('click', function () {
-            var path = this.getAttribute('data-path');
-            var type = this.getAttribute('data-type');
-            if (type === 'dir') {
-              if (path === '') {
-                currentFolder = currentFolder.split('/').slice(0, -1).join('/');
-              } else {
-                currentFolder = path;
-              }
-              renderNotesList(currentTree);
-            } else {
-              openNote(NOTES_DIR + '/' + path);
-            }
-          });
-        });
-      }
-
-      function openNote(fullPath) {
-        var token = getToken();
-        if (!token) {
-          showStatus('Set token first.', false);
-          return;
-        }
-        openFilePath = fullPath;
-        openFileSha = null;
-        document.getElementById('pathInput').value = fullPath.replace(NOTES_DIR + '/', '');
-        fetch(apiUrl('contents/' + fullPath), { headers: authHeaders() })
-          .then(function (res) {
-            if (!res.ok) return res.text().then(function (t) { throw new Error(t || 'Failed to load'); });
-            return res.json();
-          })
-          .then(function (d) {
-            var text = (d.content != null && d.encoding === 'base64') ? decodeBase64Utf8(d.content) : (d.content || '');
-            document.getElementById('noteText').value = text;
-            openFileSha = d.sha || null;
-          })
-          .catch(function (err) {
-            showStatus('Error: ' + err.message, false);
-          });
-        togglePreview(false);
-      }
-
-      function saveNote() {
-        var token = getToken();
-        if (!token) {
-          var fromPrompt = prompt('Paste your GitHub token (stored in browser only):');
-          if (fromPrompt && fromPrompt.trim()) { setToken(fromPrompt); token = getToken(); }
-          if (!token) { showStatus('Need a token to save.', false); return; }
-        }
-        var pathRel = document.getElementById('pathInput').value.trim();
-        if (!pathRel) {
-          pathRel = defaultFilename();
-          document.getElementById('pathInput').value = pathRel;
-        }
-        if (!pathRel.endsWith('.md') && !pathRel.endsWith('.txt')) pathRel += '.md';
-        var fullPath = NOTES_DIR + '/' + pathRel;
-        var noteText = document.getElementById('noteText').value;
-        var url = apiUrl('contents/' + fullPath);
-        var body = { message: 'Add note: ' + pathRel, content: base64Utf8(noteText) };
-
-        ensureNotesDir()
-          .then(function () {
-            return fetch(url, { headers: authHeaders() });
-          })
-          .then(function (getRes) {
-            if (getRes.ok) return getRes.json().then(function (data) { body.sha = data.sha; });
-          })
-          .then(function () {
-            return fetch(url, {
-              method: 'PUT',
-              headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-              body: JSON.stringify(body)
-            });
-          })
-          .then(function (res) {
-            if (res.ok) {
-              showStatus('Saved.', true);
-              openFilePath = fullPath;
-              return res.json().then(function (d) { openFileSha = (d && d.content && d.content.sha) ? d.content.sha : null; });
-            }
-            return res.json().then(function (data) {
-              var msg = data.message || 'Save failed.';
-              if (res.status === 404 || res.status === 403) msg += ' Check token has access to ' + repoOwner + '/' + repoName + '.';
-              showStatus(msg, false);
-            });
-          })
-          .then(function () { refreshNotesList(); })
-          .catch(function (err) { showStatus('Error: ' + err.message, false); });
-      }
-
-      function deleteNote() {
-        if (!openFilePath || !openFileSha) {
-          showStatus('Open a note first.', false);
-          return;
-        }
-        if (!confirm('Delete this note?')) return;
-        var token = getToken();
-        if (!token) { showStatus('Need a token.', false); return; }
-        fetch(apiUrl('contents/' + openFilePath), {
-          method: 'DELETE',
-          headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-          body: JSON.stringify({ message: 'Delete note: ' + openFilePath, sha: openFileSha })
-        })
-          .then(function (res) {
-            if (res.ok) {
-              showStatus('Deleted.', true);
-              document.getElementById('pathInput').value = '';
-              document.getElementById('noteText').value = '';
-              openFilePath = null;
-              openFileSha = null;
-              refreshNotesList();
-            } else return res.json().then(function (d) { showStatus(d.message || 'Delete failed.', false); });
-          })
-          .catch(function (err) { showStatus('Error: ' + err.message, false); });
-      }
-
-      function newFolder() {
-        var name = prompt('Folder name (e.g. work):');
-        if (!name || !name.trim()) return;
-        name = name.trim().replace(/\/+$/, '');
-        var token = getToken();
-        if (!token) {
-          showStatus('Set token first.', false);
-          return;
-        }
-        var path = NOTES_DIR + '/' + name + '/.gitkeep';
-        ensureNotesDir()
-          .then(function () {
-            return fetch(apiUrl('contents/' + path), {
-              method: 'PUT',
-              headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-              body: JSON.stringify({ message: 'New folder: ' + name, content: btoa('') })
-            });
-          })
-          .then(function (res) {
-            if (res.ok) { showStatus('Folder created.', true); refreshNotesList(); }
-            else return res.json().then(function (d) { showStatus(d.message || 'Failed.', false); });
-          })
-          .catch(function (err) { showStatus('Error: ' + err.message, false); });
-      }
-
-      function newNote() {
-        document.getElementById('pathInput').value = currentFolder ? currentFolder + '/' + defaultFilename() : defaultFilename();
-        document.getElementById('noteText').value = '';
-        openFilePath = null;
-        openFileSha = null;
-        togglePreview(false);
-      }
-
-      function togglePreview(on) {
-        previewOn = on !== undefined ? on : !previewOn;
-        var textarea = document.getElementById('noteText');
-        var preview = document.getElementById('previewArea');
-        if (previewOn) {
-          textarea.classList.add('hidden');
-          preview.classList.remove('hidden');
-          var content = textarea.value;
-          var path = document.getElementById('pathInput').value || '';
-          var isMd = path.endsWith('.md');
-          if (typeof marked !== 'undefined' && isMd) {
-            preview.innerHTML = (marked.parse || marked)(content || '');
-            var rawBase = 'https://raw.githubusercontent.com/' + repoOwner + '/' + repoName + '/' + defaultBranch + '/';
-            preview.querySelectorAll('img').forEach(function (img) {
-              var src = img.getAttribute('src');
-              if (!src) return;
-              var fullRaw = (src.indexOf('http') !== 0) ? (rawBase + (src.indexOf(NOTES_DIR) === 0 ? src : NOTES_DIR + '/' + src)) : src;
-              if (fullRaw.indexOf(rawBase) !== 0) {
-                img.setAttribute('src', fullRaw);
-                return;
-              }
-              var repoPath = fullRaw.slice(rawBase.length);
-              fetch(apiUrl('contents/' + repoPath), { headers: Object.assign({}, authHeaders(), { 'Accept': 'application/vnd.github.raw' }) })
-                .then(function (res) { return res.ok ? res.blob() : Promise.reject(new Error('Failed to load image')); })
-                .then(function (blob) {
-                  img.src = URL.createObjectURL(blob);
-                })
-                .catch(function () {});
-            });
-          } else {
-            preview.textContent = content || '';
-          }
-        } else {
-          textarea.classList.remove('hidden');
-          preview.classList.add('hidden');
-        }
-        document.getElementById('previewToggle').textContent = previewOn ? 'Edit' : 'Preview';
-      }
-
-      function addImage() {
-        document.getElementById('imageFileInput').click();
-      }
-      document.getElementById('imageFileInput').addEventListener('change', function () {
-        var file = this.files[0];
-        if (!file) return;
-        var token = getToken();
-        if (!token) { showStatus('Set token first.', false); this.value = ''; return; }
-        var base = NOTES_DIR + '/images';
-        var name = Date.now() + '-' + (file.name || 'image.png');
-        var path = base + '/' + name;
-        var reader = new FileReader();
-        reader.onload = function () {
-          var dataUrl = reader.result;
-          var base64 = dataUrl.replace(/^data:image\/\w+;base64,/, '');
-          ensureNotesDir().then(function () {
-            return fetch(apiUrl('contents/' + base + '/.gitkeep'), { headers: authHeaders() });
-          }).then(function (res) {
-            if (res.status === 404) {
-              return fetch(apiUrl('contents/' + base + '/.gitkeep'), {
-                method: 'PUT',
-                headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-                body: JSON.stringify({ message: 'Create images dir', content: btoa('') })
-              });
-            }
-            return Promise.resolve();
-          }).then(function () {
-            return fetch(apiUrl('contents/' + path), {
-              method: 'PUT',
-              headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-              body: JSON.stringify({ message: 'Add image: ' + name, content: base64 })
-            });
-          }).then(function (res) {
-            this.value = '';
-            if (res.ok) {
-              var rawUrl = 'https://raw.githubusercontent.com/' + repoOwner + '/' + repoName + '/' + defaultBranch + '/' + path;
-              var textarea = document.getElementById('noteText');
-              var insert = '![' + name + '](' + rawUrl + ')';
-              var start = textarea.selectionStart, end = textarea.selectionEnd;
-              var text = textarea.value;
-              textarea.value = text.slice(0, start) + insert + text.slice(end);
-              textarea.selectionStart = textarea.selectionEnd = start + insert.length;
-              showStatus('Image added.', true);
-              refreshNotesList();
-            } else return res.json().then(function (d) { showStatus(d.message || 'Upload failed.', false); });
-          }.bind(this)).catch(function (err) { showStatus('Error: ' + err.message, false); this.value = ''; }.bind(this));
-        };
-        reader.readAsDataURL(file);
-      });
-
-      document.getElementById('repoOwnerInput').value = repoOwner;
-      document.getElementById('repoNameInput').value = repoName;
-      updateRepoDisplay();
-
-      document.getElementById('useRepoBtn').addEventListener('click', function () {
-        setRepo(document.getElementById('repoOwnerInput').value, document.getElementById('repoNameInput').value);
-        showStatus('Repo updated.', true);
-      });
-      document.getElementById('saveTokenBtn').addEventListener('click', function () {
-        setToken(document.getElementById('tokenInput').value);
-      });
-      document.getElementById('logoutBtn').addEventListener('click', clearToken);
-      document.getElementById('saveBtn').addEventListener('click', saveNote);
-      document.getElementById('deleteBtn').addEventListener('click', deleteNote);
-      document.getElementById('newFolderBtn').addEventListener('click', newFolder);
-      document.getElementById('newNoteBtn').addEventListener('click', newNote);
-      document.getElementById('refreshNotesBtn').addEventListener('click', function () {
-        refreshNotesList();
-        showStatus('List refreshed.', true);
-      });
-      document.getElementById('previewToggle').addEventListener('click', function () { togglePreview(); });
-      document.getElementById('addImageBtn').addEventListener('click', addImage);
-
-      refreshNotesList();
-    })();
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>
