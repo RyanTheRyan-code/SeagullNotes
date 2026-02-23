@@ -2,13 +2,17 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SeagullNotes</title>
   <script src="config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({ startOnLoad: false });</script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <div id="top">
+    <button type="button" id="menuToggleBtn">☰</button>
     <div id="repoRow">
       <label>Repo owner: <input type="text" id="repoOwnerInput" placeholder="owner"></label>
       <label>Repo name: <input type="text" id="repoNameInput" placeholder="repo"></label>
@@ -29,6 +33,7 @@
       <button type="button" id="newNoteBtn">New note</button>
       <button type="button" id="newWhiteboardBtn">New whiteboard</button>
       <button type="button" id="refreshNotesBtn">Refresh list</button>
+      <input type="search" id="searchInput" placeholder="Search notes..." style="width: 100%; margin-bottom: 8px;">
       <div id="breadcrumb"></div>
       <ul id="notesList"></ul>
     </div>
@@ -36,11 +41,31 @@
       <div id="toolbar">
         <button type="button" id="saveBtn">Save</button>
         <button type="button" id="deleteBtn">Delete</button>
-        <button type="button" id="addImageBtn">Add image</button>
-        <button type="button" id="addStickyBtn">Add sticky</button>
+        <div id="insertDropdown" class="dropdown">
+          <button type="button" id="insertToggleBtn" class="dropbtn">Insert</button>
+          <div id="insertDropdownContent" class="dropdown-content">
+            <a href="#" id="addTextSticky">Text Note (Sticky)</a>
+            <a href="#" id="addDrawingSticky">Drawing (Sticky)</a>
+            <a href="#" id="addImageSticky">Image (Sticky)</a>
+            <a href="#" id="addWhiteboardSticky">Whiteboard (Sticky)</a>
+            <a href="#" id="addImageFromLibrary">From Image Library</a>
+          </div>
+        </div>
+        <button type="button" id="addImageLinkBtn">Upload Image</button>
+        <button type="button" id="addImageUrlBtn">Image from URL</button>
+        <button type="button" id="addDiagramBtn">Insert Diagram</button>
         <button type="button" id="previewToggle">Preview</button>
-        <button type="button" id="addDrawStickyBtn">Draw Sticky</button>
+        <button type="button" id="placeWhiteboardBtn">Place Whiteboard</button>
+        <button type="button" id="placeWhiteboardAsStickyBtn">Place as Sticky</button>
+        <button type="button" id="placeDrawingAsStickyBtn">Place Drawing as Sticky</button>
         <span id="status"></span>
+      </div>
+      <div id="whiteboardToolbar" class="hidden">
+        <button type="button" id="penToolBtn">Pen</button>
+        <button type="button" id="rectToolBtn">Rectangle</button>
+        <button type="button" id="circleToolBtn">Circle</button>
+        <button type="button" id="eraserToolBtn">Eraser</button>
+        <input type="color" id="strokeColorInput" value="#2c3e50">
       </div>
       <input type="text" id="pathInput" placeholder="path e.g. work/meeting.md">
       <textarea id="noteText" placeholder="Your note..."></textarea>
@@ -64,6 +89,26 @@
       <div id="drawScreenContent">
          <svg id="nativeSvgBoard" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"></svg>
       </div>
+    </div>
+  </div>
+
+  <div id="whiteboardModal" class="hidden">
+    <div id="whiteboardModalContent">
+      <h3>Select a Whiteboard</h3>
+      <ul id="whiteboardList"></ul>
+      <button type="button" id="cancelWhiteboardSelectionBtn">Cancel</button>
+    </div>
+  </div>
+
+  <div id="imageLibraryModal" class="hidden">
+    <div id="imageLibraryModalContent">
+      <h3>Image Library</h3>
+      <div id="imageLibraryList"></div>
+      <div id="imageLibraryActions" class="hidden">
+        <button type="button" id="insertImageAsLinkBtn">Insert as Link</button>
+        <button type="button" id="insertImageAsStickyBtn">Insert as Sticky</button>
+      </div>
+      <button type="button" id="cancelImageLibraryBtn">Cancel</button>
     </div>
   </div>
 
