@@ -14,15 +14,57 @@ body { font-family: sans-serif; margin: 0; }
 #notesList li:hover { background: #eee; }
 #notesList li.folder { font-weight: bold; }
 #notesList li.file { padding-left: 16px; }
+#notesList li mark { background: #ffeb3b; padding: 0 2px; border-radius: 2px; color: black; }
 #breadcrumb { font-size: 0.85em; color: #666; margin-bottom: 8px; }
 #content { flex: 1; padding: 12px; display: flex; flex-direction: column; }
 #toolbar { margin-bottom: 8px; }
 #toolbar button { margin-right: 8px; }
+
+#editorToolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: #f0f0f0;
+  border: 1px solid #ccc;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+}
+
+#editorToolbar button {
+  padding: 4px 8px;
+  cursor: pointer;
+  background: white;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  min-width: 32px;
+}
+
+#editorToolbar button:hover {
+  background: #e0e0e0;
+}
+
+.toolbar-separator {
+  margin: 0 4px;
+  color: #ccc;
+}
+
+#editorContainer {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  min-height: 400px;
+}
+
 #pathInput { width: 100%; max-width: 400px; margin-bottom: 6px; padding: 4px; }
-#noteText { flex: 1; min-height: 200px; font-family: inherit; padding: 8px; }
+#noteText { flex: 1; min-height: 200px; font-family: inherit; padding: 8px; border: 1px solid #ccc; border-radius: 0 0 4px 4px; resize: none; }
 
 /* Preview & Whiteboard Areas */
 #previewArea { flex: 1; min-height: 200px; padding: 12px; border: 1px solid #ccc; border-radius: 4px; background: #fff; overflow-y: auto; position: relative; }
+#previewArea.side-by-side { display: block !important; border-top-left-radius: 0; border-top-right-radius: 0; }
+#previewArea.full-view { display: block !important; border-radius: 0 0 4px 4px; width: 100%; }
+#noteText.side-by-side { border-right: 1px solid #ccc; }
+#noteText.full-view { display: none !important; }
 #previewArea img { max-width: 100%; }
 #whiteboardArea { flex: 1; min-height: 400px; border: 1px solid #ccc; background: #fff; position: relative; }
 #mainWhiteboardSvg { width: 100%; height: 100%; cursor: crosshair; touch-action: none; display: block; }
@@ -75,6 +117,24 @@ body { font-family: sans-serif; margin: 0; }
   
   #drawScreenHeader button {
     padding: 6px 16px; margin-left: 8px; cursor: pointer;
+  }
+  
+  #modalToolbar {
+    display: flex;
+    align-items: center;
+    margin: 0 16px;
+    gap: 8px;
+  }
+  
+  #modalToolbar button {
+    padding: 4px 10px;
+    margin: 0;
+  }
+  
+  .selected-tool {
+    background-color: #007bff !important;
+    color: white !important;
+    border-color: #0056b3 !important;
   }
   
   #drawScreenContent {

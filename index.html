@@ -8,6 +8,7 @@
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
   <script>mermaid.initialize({ startOnLoad: false });</script>
+  <script src="https://unpkg.com/turndown/dist/turndown.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -29,10 +30,6 @@
   <div id="mainLayout">
     <div id="sidebar">
       <h3>Notes</h3>
-      <button type="button" id="newFolderBtn">New folder</button>
-      <button type="button" id="newNoteBtn">New note</button>
-      <button type="button" id="newWhiteboardBtn">New whiteboard</button>
-      <button type="button" id="refreshNotesBtn">Refresh list</button>
       <input type="search" id="searchInput" placeholder="Search notes..." style="width: 100%; margin-bottom: 8px;">
       <div id="breadcrumb"></div>
       <ul id="notesList"></ul>
@@ -41,6 +38,27 @@
       <div id="toolbar">
         <button type="button" id="saveBtn">Save</button>
         <button type="button" id="deleteBtn">Delete</button>
+        <button type="button" id="previewToggle">Preview</button>
+
+        <div class="dropdown">
+          <button class="dropbtn" id="fileDropdownBtn">File</button>
+          <div class="dropdown-content" id="fileDropdownContent">
+            <a href="#" id="fileDropdownNewNoteBtn">New Note</a>
+            <a href="#" id="fileDropdownNewFolderBtn">New Folder</a>
+            <a href="#" id="fileDropdownNewWhiteboardBtn">New Whiteboard</a>
+            <a href="#" id="fileDropdownRefreshNotesBtn">Refresh List</a>
+          </div>
+        </div>
+
+        <div class="dropdown">
+          <button class="dropbtn" id="imageDropdownBtn">Image</button>
+          <div class="dropdown-content" id="imageDropdownContent">
+            <a href="#" id="imageDropdownAddImageLinkBtn">Upload Image</a>
+            <a href="#" id="imageDropdownAddImageUrlBtn">Image from URL</a>
+            <a href="#" id="imageDropdownAddImageFromLibrary">From Image Library</a>
+          </div>
+        </div>
+
         <div id="insertDropdown" class="dropdown">
           <button type="button" id="insertToggleBtn" class="dropbtn">Insert</button>
           <div id="insertDropdownContent" class="dropdown-content">
@@ -48,28 +66,42 @@
             <a href="#" id="addDrawingSticky">Drawing (Sticky)</a>
             <a href="#" id="addImageSticky">Image (Sticky)</a>
             <a href="#" id="addWhiteboardSticky">Whiteboard (Sticky)</a>
-            <a href="#" id="addImageFromLibrary">From Image Library</a>
+            <a href="#" id="addDiagramBtn">Insert Diagram</a>
+            <a href="#" id="placeWhiteboardBtn">Place Whiteboard</a>
           </div>
         </div>
-        <button type="button" id="addImageLinkBtn">Upload Image</button>
-        <button type="button" id="addImageUrlBtn">Image from URL</button>
-        <button type="button" id="addDiagramBtn">Insert Diagram</button>
-        <button type="button" id="previewToggle">Preview</button>
-        <button type="button" id="placeWhiteboardBtn">Place Whiteboard</button>
-        <button type="button" id="placeWhiteboardAsStickyBtn">Place as Sticky</button>
-        <button type="button" id="placeDrawingAsStickyBtn">Place Drawing as Sticky</button>
         <span id="status"></span>
       </div>
+
+      <div id="editorToolbar">
+        <button type="button" title="Bold" onmousedown="event.preventDefault()" onclick="insertMarkdown('**', '**')"><b>B</b></button>
+        <button type="button" title="Italic" onmousedown="event.preventDefault()" onclick="insertMarkdown('*', '*')"><i>I</i></button>
+        <button type="button" title="Heading 1" onmousedown="event.preventDefault()" onclick="insertMarkdown('# ', '')">H1</button>
+        <button type="button" title="Heading 2" onmousedown="event.preventDefault()" onclick="insertMarkdown('## ', '')">H2</button>
+        <button type="button" title="Quote" onmousedown="event.preventDefault()" onclick="insertMarkdown('> ', '')">"</button>
+        <button type="button" title="Code" onmousedown="event.preventDefault()" onclick="insertMarkdown('```\n', '\n```')">{ }</button>
+        <button type="button" title="Link" onmousedown="event.preventDefault()" onclick="insertMarkdown('[', '](https://)')">🔗</button>
+        <button type="button" title="Unordered List" onmousedown="event.preventDefault()" onclick="insertMarkdown('- ', '')">•</button>
+        <button type="button" title="Ordered List" onmousedown="event.preventDefault()" onclick="insertMarkdown('1. ', '')">1.</button>
+        <span class="toolbar-separator">|</span>
+        <button type="button" id="livePreviewToggle" title="Toggle Side-by-Side Preview">👁️ Live</button>
+        <button type="button" id="fullPreviewToggle" title="Toggle Full Screen Preview">🖥️ Full View</button>
+      </div>
+
       <div id="whiteboardToolbar" class="hidden">
         <button type="button" id="penToolBtn">Pen</button>
         <button type="button" id="rectToolBtn">Rectangle</button>
         <button type="button" id="circleToolBtn">Circle</button>
         <button type="button" id="eraserToolBtn">Eraser</button>
         <input type="color" id="strokeColorInput" value="#2c3e50">
+        <button type="button" id="placeDrawingAsStickyBtn">Place as Sticky</button>
       </div>
       <input type="text" id="pathInput" placeholder="path e.g. work/meeting.md">
-      <textarea id="noteText" placeholder="Your note..."></textarea>
-      <div id="previewArea" class="hidden"></div>
+      
+      <div id="editorContainer">
+        <textarea id="noteText" placeholder="Your note..."></textarea>
+        <div id="previewArea" class="hidden"></div>
+      </div>
       
       <div id="whiteboardArea" class="hidden">
         <svg id="mainWhiteboardSvg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"></svg>
@@ -83,6 +115,13 @@
     <div id="drawScreenWrapper">
       <div id="drawScreenHeader">
         <button type="button" id="clearDrawBtn" style="color: red; margin-right: auto;">Clear Board</button>
+        <div id="modalToolbar">
+          <button type="button" id="modalPenToolBtn">Pen</button>
+          <button type="button" id="modalRectToolBtn">Rect</button>
+          <button type="button" id="modalCircleToolBtn">Circle</button>
+          <button type="button" id="modalEraserToolBtn">Eraser</button>
+          <input type="color" id="modalStrokeColorInput" value="#2c3e50">
+        </div>
         <button type="button" id="saveDrawScreenBtn" style="font-weight: bold;">Save & Close</button>
         <button type="button" id="cancelDrawScreenBtn">Cancel</button>
       </div>

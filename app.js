@@ -13,6 +13,7 @@ var currentFolder = '';
 var openFilePath = null;
 var openFileSha = null;
 var previewOn = false;
+var fullPreview = false;
 var isWhiteboardActive = false;
 var isPlacingAsSticky = false;
 var currentWhiteboardTool = 'pen'; // 'pen', 'rectangle', 'circle', 'eraser'
@@ -22,8 +23,74 @@ var isDirty = false; // Tracks unsaved changes for autosave
 var autosaveTimer = null; // Timer for debouncing autosave
 var searchCache = {}; // Cache for search results
 var selectedImageUrl = null;
+var mainWhiteboardSvg, modalSvgBoard;
 
 var activeStickyHtml = null;
+var turndownService = (typeof TurndownService !== 'undefined') ? new TurndownService({
+  headingStyle: 'atx',
+  codeBlockStyle: 'fenced'
+}) : null;
+
+// Configure turndown to keep our custom sticky notes as raw HTML
+if (turndownService) {
+  turndownService.keep(['div', 'img', 'button']);
+}
+
+function insertMarkdown(prefix, suffix) {
+  var textarea = document.getElementById('noteText');
+  var preview = document.getElementById('previewArea');
+  
+  if (fullPreview && !preview.classList.contains('hidden')) {
+    // Unified WYSIWYG Formatting for Full View
+    if (prefix === '**') {
+      document.execCommand('bold');
+    } else if (prefix === '*') {
+      document.execCommand('italic');
+    } else if (prefix === '# ') {
+      document.execCommand('formatBlock', false, 'H1');
+    } else if (prefix === '## ') {
+      document.execCommand('formatBlock', false, 'H2');
+    } else if (prefix === '> ') {
+      document.execCommand('formatBlock', false, 'BLOCKQUOTE');
+    } else if (prefix === '- ') {
+      document.execCommand('insertUnorderedList');
+    } else if (prefix === '1. ') {
+      document.execCommand('insertOrderedList');
+    } else {
+      // Custom pattern insertion (Links, Code blocks)
+      var selection = window.getSelection();
+      if (selection.rangeCount > 0) {
+        var range = selection.getRangeAt(0);
+        var selectedText = selection.toString();
+        var content = prefix + (selectedText || 'text') + suffix;
+        
+        // Remove selection and insert new pattern
+        range.deleteContents();
+        range.insertNode(document.createTextNode(content));
+      }
+    }
+    syncPreviewToText();
+    return;
+  }
+
+  // Standard Textarea Selection Wrapping
+  var start = textarea.selectionStart;
+  var end = textarea.selectionEnd;
+  var text = textarea.value;
+  var selected = text.substring(start, end);
+  var before = text.substring(0, start);
+  var after = text.substring(end);
+  
+  textarea.value = before + prefix + selected + suffix + after;
+  textarea.selectionStart = start + prefix.length;
+  textarea.selectionEnd = textarea.selectionStart + selected.length;
+  textarea.focus();
+  
+  // Trigger update for live preview if active
+  isDirty = true;
+  triggerAutosave();
+  if (previewOn) togglePreview(true);
+}
 
 // Function to debounce calls
 function debounce(func, delay) {
@@ -46,9 +113,12 @@ function setToken(value) {
 }
 function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
-  document.getElementById('tokenInput').value = '';
-  document.getElementById('noteText').value = '';
-  document.getElementById('pathInput').value = '';
+  var tokenInput = document.getElementById('tokenInput');
+  if (tokenInput) tokenInput.value = '';
+  var textarea = document.getElementById('noteText');
+  if (textarea) textarea.value = '';
+  var pathInput = document.getElementById('pathInput');
+  if (pathInput) pathInput.value = '';
   openFilePath = null;
   openFileSha = null;
   showStatus('Logged out.', true);
@@ -103,8 +173,10 @@ function fetchDefaultBranch() {
 
 function showStatus(msg, isOk) {
   var el = document.getElementById('status');
-  el.textContent = msg;
-  el.style.color = isOk ? 'green' : 'red';
+  if (el) {
+    el.textContent = msg;
+    el.style.color = isOk ? 'green' : 'red';
+  }
 }
 
 function defaultFilename() {
@@ -124,6 +196,53 @@ function triggerAutosave() {
   }, 3000);
 }
 
+function syncPreviewToText() {
+  if (!turndownService) return;
+  var preview = document.getElementById('previewArea');
+  var textarea = document.getElementById('noteText');
+  
+  // Clone to avoid messing with the visible UI
+  var clone = preview.cloneNode(true);
+  
+  // Remove UI-only elements from the clone so they don't end up in the Markdown
+  clone.querySelectorAll('.edit-draw-btn, .mermaid, .vditor-copy').forEach(el => el.remove());
+  
+  var markdown = turndownService.turndown(clone.innerHTML);
+  textarea.value = markdown;
+  isDirty = true;
+  triggerAutosave();
+}
+
+function updateToolSelection() {
+  var mainTools = ['penToolBtn', 'rectToolBtn', 'circleToolBtn', 'eraserToolBtn'];
+  var modalTools = ['modalPenToolBtn', 'modalRectToolBtn', 'modalCircleToolBtn', 'modalEraserToolBtn'];
+  
+  var toolToId = {
+    'pen': 0,
+    'rectangle': 1,
+    'circle': 2,
+    'eraser': 3
+  };
+  
+  var activeIndex = toolToId[currentWhiteboardTool];
+  
+  mainTools.forEach(function(id, idx) {
+    var el = document.getElementById(id);
+    if (el) {
+      if (idx === activeIndex) el.classList.add('selected-tool');
+      else el.classList.remove('selected-tool');
+    }
+  });
+  
+  modalTools.forEach(function(id, idx) {
+    var el = document.getElementById(id);
+    if (el) {
+      if (idx === activeIndex) el.classList.add('selected-tool');
+      else el.classList.remove('selected-tool');
+    }
+  });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   var noteTextarea = document.getElementById('noteText');
   var whiteboardSvg = document.getElementById('mainWhiteboardSvg');
@@ -132,20 +251,266 @@ document.addEventListener('DOMContentLoaded', function() {
     noteTextarea.addEventListener('input', function() {
       isDirty = true;
       triggerAutosave();
+      if (previewOn) togglePreview(true);
     });
   }
 
-  if (whiteboardSvg) {
-    var observer = new MutationObserver(function() {
-      isDirty = true;
-      triggerAutosave();
+  var previewArea = document.getElementById('previewArea');
+  if (previewArea) {
+    previewArea.addEventListener('input', function() {
+      if (fullPreview) {
+        syncPreviewToText();
+      }
     });
-    observer.observe(whiteboardSvg, { childList: true, subtree: true, attributes: true });
   }
-});
+
+    if (whiteboardSvg) {
+      var observer = new MutationObserver(function() {
+        isDirty = true;
+        triggerAutosave();
+      });
+      observer.observe(whiteboardSvg, { childList: true, subtree: true, attributes: true });
+    }
+  
+    mainWhiteboardSvg = document.getElementById('mainWhiteboardSvg');
+    modalSvgBoard = document.getElementById('nativeSvgBoard');
+    setupSvgDrawing(mainWhiteboardSvg);
+      setupSvgDrawing(modalSvgBoard);
+    
+      var searchInput = document.getElementById('searchInput');
+    
+        if (searchInput) {
+          searchInput.addEventListener('input', function () {
+            var query = this.value.trim();
+            if (query === '') {
+              renderNotesList(fullNotesTree);
+              showStatus('', true);
+            } else {
+              // Immediate local filtering for fast feedback
+              var localResults = fullNotesTree.filter(function(e) {
+                return e.type === 'blob' && e.path.toLowerCase().indexOf(query.toLowerCase()) >= 0;
+              });
+              renderNotesList(localResults, true);
+              showStatus('Searching locally...', true);
+              
+              debouncedSearch(query);
+            }
+          });
+        }
+      
+        document.getElementById('repoOwnerInput').value = repoOwner;
+        document.getElementById('repoNameInput').value = repoName;
+        updateRepoDisplay();
+      
+        document.getElementById('useRepoBtn').addEventListener('click', function () { setRepo(document.getElementById('repoOwnerInput').value, document.getElementById('repoNameInput').value); showStatus('Repo updated.', true); });
+        document.getElementById('saveTokenBtn').addEventListener('click', function () { setToken(document.getElementById('tokenInput').value); });
+          document.getElementById('logoutBtn').addEventListener('click', clearToken);
+        
+          document.getElementById('saveBtn').addEventListener('click', function() { saveNote(); });
+          document.getElementById('deleteBtn').addEventListener('click', deleteNote);
+          document.getElementById('fileDropdownNewFolderBtn').addEventListener('click', newFolder);
+          document.getElementById('fileDropdownNewNoteBtn').addEventListener('click', newNote);
+          document.getElementById('fileDropdownNewWhiteboardBtn').addEventListener('click', newWhiteboard);
+          var addDiagramBtn = document.getElementById('addDiagramBtn');
+          if (addDiagramBtn) addDiagramBtn.addEventListener('click', addMermaidTemplate);
+          document.getElementById('imageDropdownAddImageLinkBtn').addEventListener('click', addImageLink);
+            document.getElementById('imageDropdownAddImageUrlBtn').addEventListener('click', addImageFromUrl);
+          
+              document.getElementById('fileDropdownBtn').addEventListener('click', function(event) {
+                document.getElementById('fileDropdownContent').classList.toggle('show');
+                event.stopPropagation();
+              });
+            
+              document.getElementById('imageDropdownBtn').addEventListener('click', function(event) {
+                document.getElementById('imageDropdownContent').classList.toggle('show');
+                event.stopPropagation();
+              });
+            
+                              document.getElementById('insertToggleBtn').addEventListener('click', function(event) {
+                              document.getElementById('insertDropdownContent').classList.toggle('show');
+                              event.stopPropagation();
+                            });          
+              
+                            var liveToggle = document.getElementById('livePreviewToggle');
+                            if (liveToggle) {
+                              liveToggle.addEventListener('click', function() {
+                                if (!previewOn || fullPreview) {
+                                  previewOn = true;
+                                  fullPreview = false;
+                                } else {
+                                  previewOn = false;
+                                }
+                                togglePreview(previewOn);
+                              });
+                            }
+              
+                            var fullToggle = document.getElementById('fullPreviewToggle');
+                            if (fullToggle) {
+                              fullToggle.addEventListener('click', function() {
+                                if (!previewOn || !fullPreview) {
+                                  previewOn = true;
+                                  fullPreview = true;
+                                } else {
+                                  previewOn = false;
+                                  fullPreview = false;
+                                }
+                                togglePreview(previewOn);
+                              });
+                            }
+              
+                            // Close the dropdown if the user clicks outside of it
+                            window.onclick = function(event) {
+                if (!event.target.matches('.dropbtn')) {
+                  var dropdowns = document.getElementsByClassName("dropdown-content");
+                  for (var i = 0; i < dropdowns.length; i++) {
+                    var openDropdown = dropdowns[i];
+                    if (openDropdown.classList.contains('show')) {
+                      openDropdown.classList.remove('show');
+                    }
+                  }
+                }
+              }
+            
+              document.getElementById('addTextSticky').addEventListener('click', function(e) { e.preventDefault(); addSticky(); });
+              document.getElementById('addDrawingSticky').addEventListener('click', function(e) { e.preventDefault(); addDrawSticky(); });
+              document.getElementById('addImageSticky').addEventListener('click', function(e) { e.preventDefault(); addImageSticky(); });
+              document.getElementById('addWhiteboardSticky').addEventListener('click', function(e) { e.preventDefault(); showWhiteboardModal(true); });
+              document.getElementById('imageDropdownAddImageFromLibrary').addEventListener('click', function(e) { e.preventDefault(); showImageLibrary(); });
+            
+              document.getElementById('cancelImageLibraryBtn').addEventListener('click', function() {
+                document.getElementById('imageLibraryModal').classList.add('hidden');
+              });
+            
+              document.getElementById('insertImageAsLinkBtn').addEventListener('click', function() {
+                if (selectedImageUrl) {
+                  var insert = '![](' + selectedImageUrl + ')';
+                  var textarea = document.getElementById('noteText');
+                  var start = textarea.selectionStart;
+                  var end = textarea.selectionEnd;
+                  textarea.value = textarea.value.slice(0, start) + insert + textarea.value.slice(end);
+                  textarea.selectionStart = textarea.selectionEnd = start + insert.length;
+                  showStatus('Image link added.', true);
+                  document.getElementById('imageLibraryModal').classList.add('hidden');
+                  if (previewOn) togglePreview(true);
+                }
+              });
+            
+                document.getElementById('insertImageAsStickyBtn').addEventListener('click', function() {
+                  if (selectedImageUrl) {
+                    var tempDiv = document.createElement('div');
+                    tempDiv.innerHTML = '<div class="sticky-note sticky-image" data-x="20" data-y="20" style="left: 20px; top: 20px;"><img src="' + selectedImageUrl + '" alt="Image Sticky"></div>';
+                    var stickyHtml = '\n' + tempDiv.firstElementChild.outerHTML + '\n';
+                    
+                    var textarea = document.getElementById('noteText');
+                    var start = textarea.selectionStart;
+                    var end = textarea.selectionEnd;
+                    textarea.value = textarea.value.slice(0, start) + stickyHtml + textarea.value.slice(end);
+                    textarea.selectionStart = textarea.selectionEnd = start + stickyHtml.length;
+                    
+                    if (previewOn) togglePreview(true);
+                    showStatus('Image sticky added.', true);
+                    document.getElementById('imageLibraryModal').classList.add('hidden');
+                  }
+                });
+              
+                document.getElementById('fileDropdownRefreshNotesBtn').addEventListener('click', function () { refreshNotesList(); showStatus('List refreshed.', true); });
+                document.getElementById('previewToggle').addEventListener('click', function () { togglePreview(); });
+                var placeBtn = document.getElementById('placeWhiteboardBtn');
+                if (placeBtn) placeBtn.addEventListener('click', function () { showWhiteboardModal(false); });
+                
+                var cancelWBtn = document.getElementById('cancelWhiteboardSelectionBtn');
+                if (cancelWBtn) cancelWBtn.addEventListener('click', function() {
+                  document.getElementById('whiteboardModal').classList.add('hidden');
+                });
+                
+                var placeStickyBtn = document.getElementById('placeDrawingAsStickyBtn');
+                if (placeStickyBtn) placeStickyBtn.addEventListener('click', placeCurrentDrawingAsSticky);
+                
+                // Event listener for mobile menu toggle
+                var menuToggleBtn = document.getElementById('menuToggleBtn');
+                if (menuToggleBtn) {
+                  menuToggleBtn.addEventListener('click', function() {
+                    document.body.classList.toggle('sidebar-open');
+                  });
+                }
+              
+                // Event listeners for whiteboard tools
+                var penBtn = document.getElementById('penToolBtn');
+                if (penBtn) penBtn.addEventListener('click', function() {
+                  currentWhiteboardTool = 'pen';
+                  updateToolSelection();
+                  showStatus('Tool: Pen', true);
+                });
+                
+                var rectBtn = document.getElementById('rectToolBtn');
+                if (rectBtn) rectBtn.addEventListener('click', function() {
+                  currentWhiteboardTool = 'rectangle';
+                  updateToolSelection();
+                  showStatus('Tool: Rectangle', true);
+                });
+                
+                var circleBtn = document.getElementById('circleToolBtn');
+                if (circleBtn) circleBtn.addEventListener('click', function() {
+                  currentWhiteboardTool = 'circle';
+                  updateToolSelection();
+                  showStatus('Tool: Circle', true);
+                });
+                
+                var eraserBtn = document.getElementById('eraserToolBtn');
+                if (eraserBtn) eraserBtn.addEventListener('click', function() {
+                  currentWhiteboardTool = 'eraser';
+                  updateToolSelection();
+                  showStatus('Tool: Eraser', true);
+                });
+                
+                var strokeIn = document.getElementById('strokeColorInput');
+                if (strokeIn) strokeIn.addEventListener('input', function() {
+                  currentStrokeColor = this.value;
+                  var modalStroke = document.getElementById('modalStrokeColorInput');
+                  if (modalStroke) modalStroke.value = currentStrokeColor;
+                  showStatus('Color: ' + currentStrokeColor, true);
+                });
+
+                // Modal toolbar listeners
+                var mPenBtn = document.getElementById('modalPenToolBtn');
+                if (mPenBtn) mPenBtn.addEventListener('click', function() {
+                  currentWhiteboardTool = 'pen';
+                  updateToolSelection();
+                });
+                
+                var mRectBtn = document.getElementById('modalRectToolBtn');
+                if (mRectBtn) mRectBtn.addEventListener('click', function() {
+                  currentWhiteboardTool = 'rectangle';
+                  updateToolSelection();
+                });
+                
+                var mCircleBtn = document.getElementById('modalCircleToolBtn');
+                if (mCircleBtn) mCircleBtn.addEventListener('click', function() {
+                  currentWhiteboardTool = 'circle';
+                  updateToolSelection();
+                });
+                
+                var mEraserBtn = document.getElementById('modalEraserToolBtn');
+                if (mEraserBtn) mEraserBtn.addEventListener('click', function() {
+                  currentWhiteboardTool = 'eraser';
+                  updateToolSelection();
+                });
+                
+                var mStrokeIn = document.getElementById('modalStrokeColorInput');
+                if (mStrokeIn) mStrokeIn.addEventListener('input', function() {
+                  currentStrokeColor = this.value;
+                  var mainStroke = document.getElementById('strokeColorInput');
+                  if (mainStroke) mainStroke.value = currentStrokeColor;
+                });
+              
+                updateToolSelection();
+                refreshNotesList();
+              }
+            );
 
 function getMousePos(svgElement, evt) {
   var CTM = svgElement.getScreenCTM();
+  if (!CTM) return { x: 0, y: 0 }; // Handle cases where CTM might be null
   return {
     x: (evt.clientX - CTM.e) / CTM.a,
     y: (evt.clientY - CTM.f) / CTM.d
@@ -156,20 +521,35 @@ var isDrawing = false;
 var startPos = { x: 0, y: 0 };
 
 function erase(svgElement, e) {
-  var pt = getMousePos(svgElement, e);
   var target = document.elementFromPoint(e.clientX, e.clientY);
-  if (target && target.tagName && ['path', 'rect', 'circle'].includes(target.tagName.toLowerCase())) {
-    if (target.parentElement === svgElement) {
-        target.remove();
+  // If we are clicking on a child of a group or just a direct shape
+  while (target && target !== svgElement && target !== document.body) {
+    if (target.tagName && ['path', 'rect', 'circle'].includes(target.tagName.toLowerCase())) {
+      target.remove();
+      return;
     }
+    target = target.parentElement;
   }
 }
 
 function setupSvgDrawing(svgElement) {
+  if (!svgElement) return;
+
   svgElement.addEventListener('pointerdown', function(e) {
     if (e.button !== 0) return;
+    
+    // For eraser, we might want to erase on down too
+    if (currentWhiteboardTool === 'eraser') {
+      isDrawing = true;
+      erase(svgElement, e);
+      svgElement.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    e.preventDefault(); 
     isDrawing = true;
     startPos = getMousePos(svgElement, e);
+    currentDrawingElement = null; 
     
     switch (currentWhiteboardTool) {
       case 'pen':
@@ -184,23 +564,25 @@ function setupSvgDrawing(svgElement) {
       case 'rectangle':
         currentDrawingElement = document.createElementNS("http://www.w3.org/2000/svg", "rect");
         currentDrawingElement.setAttribute("stroke", currentStrokeColor);
-        currentDrawingElement.setAttribute("stroke-width", "3");
+        currentDrawingElement.setAttribute("stroke-width", "4");
         currentDrawingElement.setAttribute("fill", "none");
         currentDrawingElement.setAttribute("x", startPos.x);
         currentDrawingElement.setAttribute("y", startPos.y);
+        currentDrawingElement.setAttribute("width", "0");
+        currentDrawingElement.setAttribute("height", "0");
         break;
       case 'circle':
         currentDrawingElement = document.createElementNS("http://www.w3.org/2000/svg", "circle");
         currentDrawingElement.setAttribute("stroke", currentStrokeColor);
-        currentDrawingElement.setAttribute("stroke-width", "3");
+        currentDrawingElement.setAttribute("stroke-width", "4");
         currentDrawingElement.setAttribute("fill", "none");
-        break;
-      case 'eraser':
-        erase(svgElement, e); 
+        currentDrawingElement.setAttribute("cx", startPos.x);
+        currentDrawingElement.setAttribute("cy", startPos.y);
+        currentDrawingElement.setAttribute("r", "0");
         break;
     }
 
-    if (currentDrawingElement && currentWhiteboardTool !== 'eraser') {
+    if (currentDrawingElement) {
       svgElement.appendChild(currentDrawingElement);
     }
     
@@ -209,36 +591,37 @@ function setupSvgDrawing(svgElement) {
 
   svgElement.addEventListener('pointermove', function(e) {
     if (!isDrawing) return;
+    e.preventDefault();
     var pos = getMousePos(svgElement, e);
     
+    if (currentWhiteboardTool === 'eraser') {
+      erase(svgElement, e);
+      return;
+    }
+
     switch (currentWhiteboardTool) {
       case 'pen':
-        if (currentDrawingElement) {
+        if (currentDrawingElement && currentDrawingElement.tagName === 'path') {
           currentDrawingElement.setAttribute("d", currentDrawingElement.getAttribute("d") + " L " + pos.x + " " + pos.y);
         }
         break;
       case 'rectangle':
-         if (currentDrawingElement) {
-            var width = pos.x - startPos.x;
-            var height = pos.y - startPos.y;
-            currentDrawingElement.setAttribute("x", width > 0 ? startPos.x : pos.x);
-            currentDrawingElement.setAttribute("y", height > 0 ? startPos.y : pos.y);
-            currentDrawingElement.setAttribute("width", Math.abs(width));
-            currentDrawingElement.setAttribute("height", Math.abs(height));
+        if (currentDrawingElement && currentDrawingElement.tagName === 'rect') {
+          var width = pos.x - startPos.x;
+          var height = pos.y - startPos.y;
+          currentDrawingElement.setAttribute("x", width > 0 ? startPos.x : pos.x);
+          currentDrawingElement.setAttribute("y", height > 0 ? startPos.y : pos.y);
+          currentDrawingElement.setAttribute("width", Math.abs(width));
+          currentDrawingElement.setAttribute("height", Math.abs(height));
         }
         break;
       case 'circle':
-        if (currentDrawingElement) {
-            var dx = pos.x - startPos.x;
-            var dy = pos.y - startPos.y;
-            var r = Math.sqrt(dx*dx + dy*dy);
-            currentDrawingElement.setAttribute("cx", startPos.x);
-            currentDrawingElement.setAttribute("cy", startPos.y);
-            currentDrawingElement.setAttribute("r", r);
+        if (currentDrawingElement && currentDrawingElement.tagName === 'circle') {
+          var dx = pos.x - startPos.x;
+          var dy = pos.y - startPos.y;
+          var r = Math.sqrt(dx*dx + dy*dy);
+          currentDrawingElement.setAttribute("r", r);
         }
-        break;
-      case 'eraser':
-        erase(svgElement, e);
         break;
     }
   });
@@ -250,12 +633,7 @@ function setupSvgDrawing(svgElement) {
   });
 }
 
-var mainWhiteboardSvg = document.getElementById('mainWhiteboardSvg');
-var modalSvgBoard = document.getElementById('nativeSvgBoard');
-setupSvgDrawing(mainWhiteboardSvg);
-setupSvgDrawing(modalSvgBoard);
 
-var searchInput = document.getElementById('searchInput');
 
 function searchGithub(query) {
   var token = getToken();
@@ -265,7 +643,18 @@ function searchGithub(query) {
     return;
   }
 
-  showStatus('Searching...', true);
+  // 1. Local Search (Instant) - Filename match
+  var localResults = fullNotesTree.filter(function(e) {
+    return e.type === 'blob' && e.path.toLowerCase().indexOf(query.toLowerCase()) >= 0;
+  });
+
+  // Check cache for remote results
+  if (searchCache[query]) {
+    combineAndRenderResults(localResults, searchCache[query], query);
+    return;
+  }
+
+  showStatus('Searching content on GitHub...', true);
 
   var searchUrl = 'https://api.github.com/search/code?q=' + encodeURIComponent(query) +
                   '+in:file+repo:' + repoOwner + '/' + repoName +
@@ -273,72 +662,84 @@ function searchGithub(query) {
 
   fetch(searchUrl, { headers: authHeaders() })
     .then(function (res) {
+      if (res.status === 403) {
+        throw new Error('Search API rate limit reached. Please wait a minute.');
+      }
       if (!res.ok) return res.json().then(function (d) { throw new Error(d.message || 'Search failed.'); });
       return res.json();
     })
     .then(function (data) {
-      var searchResults = data.items.map(function (item) {
+      var remoteResults = data.items.map(function (item) {
         return {
           path: item.path,
           type: 'blob',
           sha: item.sha
         };
       });
-      if (data.items.length === 0) {
-        showStatus('No results found for "' + query + '".', true);
-      } else {
-        showStatus('Search complete. Found ' + data.items.length + ' results.', true);
-      }
-      renderNotesList(searchResults, true);
+      
+      searchCache[query] = remoteResults;
+      combineAndRenderResults(localResults, remoteResults, query);
     })
     .catch(function (err) {
       showStatus('Search error: ' + err.message, false);
-      renderNotesList([]);
+      // Fallback to local results only if remote fails
+      renderNotesList(localResults, true);
     });
 }
 
-var debouncedSearch = debounce(searchGithub, 300);
-
-if (searchInput) {
-  searchInput.addEventListener('keyup', function () {
-    if (this.value.trim() === '') {
-      renderNotesList(fullNotesTree);
-      showStatus('', true);
-    } else {
-      debouncedSearch(this.value.trim());
+function combineAndRenderResults(local, remote, query) {
+  // Merge and remove duplicates based on path
+  var seenPaths = new Set();
+  var combined = [];
+  
+  local.forEach(function(item) {
+    if (!seenPaths.has(item.path)) {
+      combined.push(item);
+      seenPaths.add(item.path);
     }
   });
+  
+  remote.forEach(function(item) {
+    if (!seenPaths.has(item.path)) {
+      combined.push(item);
+      seenPaths.add(item.path);
+    }
+  });
+
+  if (combined.length === 0) {
+    showStatus('No results found for "' + query + '".', true);
+  } else {
+    showStatus('Search complete. Found ' + combined.length + ' results.', true);
+  }
+  renderNotesList(combined, true);
 }
+
+var debouncedSearch = debounce(searchGithub, 800);
 
 function toggleWhiteboard(on) {
   isWhiteboardActive = on;
-  var textarea = document.getElementById('noteText');
   var preview = document.getElementById('previewArea');
   var whiteboard = document.getElementById('whiteboardArea');
-  var previewBtn = document.getElementById('previewToggle');
   var insertDropdown = document.getElementById('insertDropdown');
-  var addImageLinkBtn = document.getElementById('addImageLinkBtn');
-  var addDiagramBtn = document.getElementById('addDiagramBtn');
   var placeDrawingAsStickyBtn = document.getElementById('placeDrawingAsStickyBtn');
   var whiteboardToolbar = document.getElementById('whiteboardToolbar');
+  var editorToolbar = document.getElementById('editorToolbar');
+  var noteText = document.getElementById('noteText');
 
   if (on) {
-    textarea.classList.add('hidden');
-    preview.classList.add('hidden');
-    whiteboard.classList.remove('hidden');
-    previewBtn.classList.add('hidden');
+    if (editorToolbar) editorToolbar.classList.add('hidden');
+    if (noteText) noteText.classList.add('hidden');
+    if (preview) preview.classList.add('hidden');
+    if (whiteboard) whiteboard.classList.remove('hidden');
     if (insertDropdown) insertDropdown.classList.add('hidden');
-    if (addImageLinkBtn) addImageLinkBtn.classList.add('hidden');
-    if (addDiagramBtn) addDiagramBtn.classList.add('hidden');
-    placeDrawingAsStickyBtn.classList.remove('hidden');
+    if (placeDrawingAsStickyBtn) placeDrawingAsStickyBtn.classList.remove('hidden');
     if (whiteboardToolbar) whiteboardToolbar.classList.remove('hidden');
   } else {
-    whiteboard.classList.add('hidden');
-    previewBtn.classList.remove('hidden');
+    if (whiteboard) whiteboard.classList.add('hidden');
+    if (editorToolbar) editorToolbar.classList.remove('hidden');
+    if (noteText) noteText.classList.remove('hidden');
     if (insertDropdown) insertDropdown.classList.remove('hidden');
-    if (addImageLinkBtn) addImageLinkBtn.classList.remove('hidden');
-    if (addDiagramBtn) addDiagramBtn.classList.remove('hidden');
-    placeDrawingAsStickyBtn.classList.add('hidden');
+    if (placeDrawingAsStickyBtn) placeDrawingAsStickyBtn.classList.add('hidden');
     if (whiteboardToolbar) whiteboardToolbar.classList.add('hidden');
     togglePreview(previewOn);
   }
@@ -399,7 +800,16 @@ function renderNotesList(treeToRender, isSearchResult = false) {
     dirs.forEach(function (d) { html += '<li class="folder" data-path="' + (currentFolder ? currentFolder + '/' : '') + d + '" data-type="dir">' + d + '/</li>'; });
   }
   
-  files.forEach(function (f) { html += '<li class="file" data-path="' + (isSearchResult ? f : (currentFolder ? currentFolder + '/' : '') + f) + '" data-type="file">' + f + '</li>'; });
+  files.forEach(function (f) {
+    var displayName = f;
+    var searchInput = document.getElementById('searchInput');
+    var query = searchInput ? searchInput.value.trim() : '';
+    if (isSearchResult && query) {
+      var regex = new RegExp('(' + query.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&') + ')', 'gi');
+      displayName = f.replace(regex, '<mark>$1</mark>');
+    }
+    html += '<li class="file" data-path="' + (isSearchResult ? f : (currentFolder ? currentFolder + '/' : '') + f) + '" data-type="file">' + displayName + '</li>';
+  });
   if (html === '') html = '<li>No notes yet</li>';
   document.getElementById('notesList').innerHTML = html;
   document.getElementById('breadcrumb').textContent = isSearchResult ? 'Search Results' : NOTES_DIR + (currentFolder ? '/' + currentFolder : '') + '/';
@@ -428,7 +838,8 @@ function openNote(fullPath) {
 
   openFilePath = fullPath;
   openFileSha = null;
-  document.getElementById('pathInput').value = fullPath.replace(NOTES_DIR + '/', '');
+  var pathInput = document.getElementById('pathInput');
+  if (pathInput) pathInput.value = fullPath.replace(NOTES_DIR + '/', '');
   fetch(apiUrl('contents/' + fullPath), { headers: authHeaders() })
     .then(function (res) {
       if (!res.ok) return res.text().then(function (t) { throw new Error(t || 'Failed to load'); });
@@ -445,7 +856,8 @@ function openNote(fullPath) {
         var loadedSvg = tempDiv.querySelector('svg');
         mainWhiteboardSvg.innerHTML = loadedSvg ? loadedSvg.innerHTML : '';
       } else {
-        document.getElementById('noteText').value = text;
+        var noteTextEl = document.getElementById('noteText');
+        if (noteTextEl) noteTextEl.value = text;
         toggleWhiteboard(false);
         togglePreview(false);
       }
@@ -464,9 +876,9 @@ function saveNote(isAutosave = false) {
       return;
     }
   }
-  var pathRel = document.getElementById('pathInput').value.trim();
-  if (!pathRel) { pathRel = defaultFilename(); document.getElementById('pathInput').value = pathRel; }
-  if (!isWhiteboardActive && !pathRel.endsWith('.md') && !pathRel.endsWith('.txt') && !pathRel.endsWith('.svg')) pathRel += '.md';
+  var pathInput = document.getElementById('pathInput');
+  var pathRel = pathInput ? pathInput.value.trim() : '';
+      if (!pathRel) { pathRel = defaultFilename(); if (pathInput) pathInput.value = pathRel; }  if (!isWhiteboardActive && !pathRel.endsWith('.md') && !pathRel.endsWith('.txt') && !pathRel.endsWith('.svg')) pathRel += '.md';
   
   var fullPath = NOTES_DIR + '/' + pathRel;
   var noteContent = '';
@@ -474,7 +886,8 @@ function saveNote(isAutosave = false) {
   if (isWhiteboardActive) {
     noteContent = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">' + mainWhiteboardSvg.innerHTML + '</svg>';
   } else {
-    noteContent = document.getElementById('noteText').value;
+    var noteTextEl = document.getElementById('noteText');
+    noteContent = noteTextEl ? noteTextEl.value : '';
   }
   
   var url = apiUrl('contents/' + fullPath);
@@ -519,8 +932,10 @@ function deleteNote() {
   }).then(function (res) {
       if (res.ok) {
         showStatus('Deleted.', true);
-        document.getElementById('pathInput').value = '';
-        document.getElementById('noteText').value = '';
+        var pathInput = document.getElementById('pathInput');
+        if (pathInput) pathInput.value = '';
+        var noteText = document.getElementById('noteText');
+        if (noteText) noteText.value = '';
         mainWhiteboardSvg.innerHTML = '';
         openFilePath = null;
         openFileSha = null;
@@ -551,8 +966,10 @@ function newFolder() {
 }
 
 function newNote() {
-  document.getElementById('pathInput').value = currentFolder ? currentFolder + '/' + defaultFilename() : defaultFilename();
-  document.getElementById('noteText').value = '';
+  var pathInput = document.getElementById('pathInput');
+  if (pathInput) pathInput.value = currentFolder ? currentFolder + '/' + defaultFilename() : defaultFilename();
+  var noteText = document.getElementById('noteText');
+  if (noteText) noteText.value = '';
   openFilePath = null;
   openFileSha = null;
   toggleWhiteboard(false);
@@ -596,6 +1013,19 @@ function initDraggableStickies() {
         var newHtml = sticky.outerHTML;
         textarea.value = textarea.value.replace(originalHtml, newHtml);
         originalHtml = newHtml;
+        isDirty = true;
+        triggerAutosave();
+      }
+    });
+
+    // Handle text changes in contenteditable stickies
+    sticky.addEventListener('blur', function() {
+      var newHtml = sticky.outerHTML;
+      if (newHtml !== originalHtml) {
+        textarea.value = textarea.value.replace(originalHtml, newHtml);
+        originalHtml = newHtml;
+        isDirty = true;
+        triggerAutosave();
       }
     });
   });
@@ -619,6 +1049,11 @@ window.openDrawScreen = function(stickyEl) {
 
   modalSvgBoard.innerHTML = loadedSvg ? loadedSvg.innerHTML : '';
   activeStickyHtml = stickyEl.outerHTML;
+
+  // Sync modal controls with current state
+  var modalStroke = document.getElementById('modalStrokeColorInput');
+  if (modalStroke) modalStroke.value = currentStrokeColor;
+  updateToolSelection();
 };
 
 function closeDrawScreen() {
@@ -629,21 +1064,27 @@ function closeDrawScreen() {
 }
 
 document.getElementById('saveDrawScreenBtn').addEventListener('click', function() {
-  if (activeStickyHtml) {
+  if (activeStickyHtml && modalSvgBoard) {
     var finalSvgString = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="100%" height="100%">' + modalSvgBoard.innerHTML + '</svg>';
+    var croppedSvg = cropSvg(finalSvgString);
     
     var tempDiv = document.createElement('div');
     tempDiv.innerHTML = activeStickyHtml;
     var stickyEl = tempDiv.firstElementChild;
-    stickyEl.querySelector('.draw-preview').innerHTML = finalSvgString;
+    var drawPreview = stickyEl ? stickyEl.querySelector('.draw-preview') : null;
+    if (drawPreview) drawPreview.innerHTML = croppedSvg;
     
-    var newHtml = stickyEl.outerHTML;
+    var newHtml = stickyEl ? stickyEl.outerHTML : '';
     var textarea = document.getElementById('noteText');
 
-    if (textarea.value.indexOf(activeStickyHtml) === -1) {
-        console.error("Sync Error: activeStickyHtml not found in raw text. String replacement failed.");
+    if (textarea && newHtml) {
+      if (textarea.value.indexOf(activeStickyHtml) === -1) {
+          console.error("Sync Error: activeStickyHtml not found in raw text. String replacement failed.");
+          showStatus("Error saving drawing sticky: text changed.", false);
+      } else {
+          textarea.value = textarea.value.replace(activeStickyHtml, newHtml);
+      }
     }
-    textarea.value = textarea.value.replace(activeStickyHtml, newHtml);
     
     closeDrawScreen();
     togglePreview(true);
@@ -684,8 +1125,20 @@ function togglePreview(on) {
   var preview = document.getElementById('previewArea');
   
   if (previewOn) {
-    textarea.classList.add('hidden');
+    if (fullPreview) {
+      textarea.classList.remove('side-by-side');
+      preview.classList.remove('side-by-side');
+      textarea.classList.add('full-view');
+      preview.classList.add('full-view');
+    } else {
+      textarea.classList.remove('full-view');
+      preview.classList.remove('full-view');
+      textarea.classList.add('side-by-side');
+      preview.classList.add('side-by-side');
+      preview.contentEditable = "false";
+    }
     preview.classList.remove('hidden');
+    if (fullPreview) preview.contentEditable = "true";
     var content = textarea.value;
     var path = document.getElementById('pathInput').value || '';
     var isMd = path === '' || path.endsWith('.md'); 
@@ -721,10 +1174,17 @@ function togglePreview(on) {
       preview.textContent = content || '';
     }
   } else {
-    textarea.classList.remove('hidden');
+    textarea.classList.remove('side-by-side', 'full-view');
+    preview.classList.remove('side-by-side', 'full-view');
     preview.classList.add('hidden');
+    preview.contentEditable = "false";
   }
-  document.getElementById('previewToggle').textContent = previewOn ? 'Edit' : 'Preview';
+  
+  var toggleBtn = document.getElementById('livePreviewToggle');
+  if (toggleBtn) toggleBtn.textContent = (previewOn && !fullPreview) ? '📖 Full Edit' : '👁️ Live';
+  
+  var fullToggleBtn = document.getElementById('fullPreviewToggle');
+  if (fullToggleBtn) fullToggleBtn.textContent = (previewOn && fullPreview) ? '✍️ Edit' : '🖥️ Full View';
 }
 
 function addSticky() {
@@ -818,6 +1278,7 @@ function addImageLink() {
     var start = textarea.selectionStart;
     textarea.value = textarea.value.slice(0, start) + insert + textarea.value.slice(start);
     textarea.selectionStart = textarea.selectionEnd = start + insert.length;
+    if (previewOn) togglePreview(true);
     showStatus('Image link added.', true);
   });
 }
@@ -830,6 +1291,7 @@ function addImageFromUrl() {
     var start = textarea.selectionStart;
     textarea.value = textarea.value.slice(0, start) + insert + textarea.value.slice(start);
     textarea.selectionStart = textarea.selectionEnd = start + insert.length;
+    if (previewOn) togglePreview(true);
     showStatus('Image link added.', true);
   }
 }
@@ -1033,26 +1495,45 @@ function cropSvg(svgContent) {
     maxY: -Infinity,
   };
 
-  var paths = svg.querySelectorAll('path');
-  if (paths.length === 0) {
+  var elements = svg.querySelectorAll('path, rect, circle');
+  if (elements.length === 0) {
     return svgContent;
   }
 
-  paths.forEach(function(path) {
-    var d = path.getAttribute('d');
-    var commands = d.split(/(?=[LMCHVZ])/);
-    commands.forEach(function(command) {
-      var points = command.slice(1).trim().split(/[\s,]+/);
-      var x = parseFloat(points[points.length - 2]);
-      var y = parseFloat(points[points.length - 1]);
+  elements.forEach(function(el) {
+    if (el.tagName.toLowerCase() === 'path') {
+      var d = el.getAttribute('d');
+      var commands = d.split(/(?=[LMCHVZ])/);
+      commands.forEach(function(command) {
+        var points = command.slice(1).trim().split(/[\s,]+/);
+        var x = parseFloat(points[points.length - 2]);
+        var y = parseFloat(points[points.length - 1]);
 
-      if (!isNaN(x) && !isNaN(y)) {
-        bbox.minX = Math.min(bbox.minX, x);
-        bbox.minY = Math.min(bbox.minY, y);
-        bbox.maxX = Math.max(bbox.maxX, x);
-        bbox.maxY = Math.max(bbox.maxY, y);
-      }
-    });
+        if (!isNaN(x) && !isNaN(y)) {
+          bbox.minX = Math.min(bbox.minX, x);
+          bbox.minY = Math.min(bbox.minY, y);
+          bbox.maxX = Math.max(bbox.maxX, x);
+          bbox.maxY = Math.max(bbox.maxY, y);
+        }
+      });
+    } else if (el.tagName.toLowerCase() === 'rect') {
+      var x = parseFloat(el.getAttribute('x'));
+      var y = parseFloat(el.getAttribute('y'));
+      var w = parseFloat(el.getAttribute('width'));
+      var h = parseFloat(el.getAttribute('height'));
+      bbox.minX = Math.min(bbox.minX, x);
+      bbox.minY = Math.min(bbox.minY, y);
+      bbox.maxX = Math.max(bbox.maxX, x + w);
+      bbox.maxY = Math.max(bbox.maxY, y + h);
+    } else if (el.tagName.toLowerCase() === 'circle') {
+      var cx = parseFloat(el.getAttribute('cx'));
+      var cy = parseFloat(el.getAttribute('cy'));
+      var r = parseFloat(el.getAttribute('r'));
+      bbox.minX = Math.min(bbox.minX, cx - r);
+      bbox.minY = Math.min(bbox.minY, cy - r);
+      bbox.maxX = Math.max(bbox.maxX, cx + r);
+      bbox.maxY = Math.max(bbox.maxY, cy + r);
+    }
   });
 
   var padding = 10;
@@ -1066,115 +1547,3 @@ function cropSvg(svgContent) {
   var serializer = new XMLSerializer();
   return serializer.serializeToString(svg);
 }
-
-document.getElementById('repoOwnerInput').value = repoOwner;
-document.getElementById('repoNameInput').value = repoName;
-updateRepoDisplay();
-
-document.getElementById('useRepoBtn').addEventListener('click', function () { setRepo(document.getElementById('repoOwnerInput').value, document.getElementById('repoNameInput').value); showStatus('Repo updated.', true); });
-document.getElementById('saveTokenBtn').addEventListener('click', function () { setToken(document.getElementById('tokenInput').value); });
-document.getElementById('logoutBtn').addEventListener('click', clearToken);
-document.getElementById('saveBtn').addEventListener('click', function() { saveNote(); });
-document.getElementById('deleteBtn').addEventListener('click', deleteNote);
-document.getElementById('newFolderBtn').addEventListener('click', newFolder);
-document.getElementById('newNoteBtn').addEventListener('click', newNote);
-document.getElementById('newWhiteboardBtn').addEventListener('click', newWhiteboard);
-document.getElementById('addDiagramBtn').addEventListener('click', addMermaidTemplate);
-document.getElementById('addImageLinkBtn').addEventListener('click', addImageLink);
-document.getElementById('addImageUrlBtn').addEventListener('click', addImageFromUrl);
-
-document.getElementById('insertToggleBtn').addEventListener('click', function(event) {
-  document.getElementById('insertDropdownContent').classList.toggle('show');
-  event.stopPropagation();
-});
-
-// Close the dropdown if the user clicks outside of it
-window.onclick = function(event) {
-  if (!event.target.matches('.dropbtn')) {
-    var dropdowns = document.getElementsByClassName("dropdown-content");
-    for (var i = 0; i < dropdowns.length; i++) {
-      var openDropdown = dropdowns[i];
-      if (openDropdown.classList.contains('show')) {
-        openDropdown.classList.remove('show');
-      }
-    }
-  }
-}
-
-document.getElementById('addTextSticky').addEventListener('click', function(e) { e.preventDefault(); addSticky(); });
-document.getElementById('addDrawingSticky').addEventListener('click', function(e) { e.preventDefault(); addDrawSticky(); });
-document.getElementById('addImageSticky').addEventListener('click', function(e) { e.preventDefault(); addImageSticky(); });
-document.getElementById('addWhiteboardSticky').addEventListener('click', function(e) { e.preventDefault(); showWhiteboardModal(true); });
-document.getElementById('addImageFromLibrary').addEventListener('click', function(e) { e.preventDefault(); showImageLibrary(); });
-
-document.getElementById('cancelImageLibraryBtn').addEventListener('click', function() {
-  document.getElementById('imageLibraryModal').classList.add('hidden');
-});
-
-document.getElementById('insertImageAsLinkBtn').addEventListener('click', function() {
-  if (selectedImageUrl) {
-    var textarea = document.getElementById('noteText');
-    var insert = '![](' + selectedImageUrl + ')';
-    var start = textarea.selectionStart;
-    textarea.value = textarea.value.slice(0, start) + insert + textarea.value.slice(start);
-    textarea.selectionStart = textarea.selectionEnd = start + insert.length;
-    showStatus('Image link added.', true);
-    document.getElementById('imageLibraryModal').classList.add('hidden');
-  }
-});
-
-document.getElementById('insertImageAsStickyBtn').addEventListener('click', function() {
-  if (selectedImageUrl) {
-    var tempDiv = document.createElement('div');
-    tempDiv.innerHTML = '<div class="sticky-note sticky-image" data-x="20" data-y="20" style="left: 20px; top: 20px;"><img src="' + selectedImageUrl + '" alt="Image Sticky"></div>';
-    var stickyHtml = '\n' + tempDiv.firstElementChild.outerHTML + '\n';
-    
-    var textarea = document.getElementById('noteText');
-    var start = textarea.selectionStart;
-    textarea.value = textarea.value.slice(0, start) + stickyHtml + textarea.value.slice(start);
-    textarea.selectionStart = textarea.selectionEnd = start + stickyHtml.length;
-    if (previewOn) togglePreview(true);
-    showStatus('Image sticky added.', true);
-    document.getElementById('imageLibraryModal').classList.add('hidden');
-  }
-});
-
-document.getElementById('refreshNotesBtn').addEventListener('click', function () { refreshNotesList(); showStatus('List refreshed.', true); });
-document.getElementById('previewToggle').addEventListener('click', function () { togglePreview(); });
-document.getElementById('placeWhiteboardBtn').addEventListener('click', function () { showWhiteboardModal(false); });
-document.getElementById('placeDrawingAsStickyBtn').addEventListener('click', placeCurrentDrawingAsSticky);
-document.getElementById('cancelWhiteboardSelectionBtn').addEventListener('click', function () {
-  document.getElementById('whiteboardModal').classList.add('hidden');
-});
-
-// Event listener for mobile menu toggle
-var menuToggleBtn = document.getElementById('menuToggleBtn');
-if (menuToggleBtn) {
-  menuToggleBtn.addEventListener('click', function() {
-    document.body.classList.toggle('sidebar-open');
-  });
-}
-
-// Event listeners for whiteboard tools
-document.getElementById('penToolBtn').addEventListener('click', function() {
-  currentWhiteboardTool = 'pen';
-  showStatus('Tool: Pen', true);
-});
-document.getElementById('rectToolBtn').addEventListener('click', function() {
-  currentWhiteboardTool = 'rectangle';
-  showStatus('Tool: Rectangle', true);
-});
-document.getElementById('circleToolBtn').addEventListener('click', function() {
-  currentWhiteboardTool = 'circle';
-  showStatus('Tool: Circle', true);
-});
-document.getElementById('eraserToolBtn').addEventListener('click', function() {
-  currentWhiteboardTool = 'eraser';
-  showStatus('Tool: Eraser', true);
-});
-document.getElementById('strokeColorInput').addEventListener('change', function() {
-  currentStrokeColor = this.value;
-  showStatus('Color: ' + currentStrokeColor, true);
-});
-
-refreshNotesList();
