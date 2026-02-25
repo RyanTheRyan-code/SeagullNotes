@@ -31,9 +31,28 @@ var turndownService = (typeof TurndownService !== 'undefined') ? new TurndownSer
   codeBlockStyle: 'fenced'
 }) : null;
 
-// Configure turndown to keep our custom sticky notes as raw HTML
+// Configure turndown rules for SeagullNotes custom elements
 if (turndownService) {
-  turndownService.keep(['div', 'img', 'button']);
+  // Rule to preserve Mermaid diagrams correctly
+  turndownService.addRule('mermaid', {
+    filter: function (node) {
+      return node.classList && node.classList.contains('mermaid');
+    },
+    replacement: function (content, node) {
+      var source = node.getAttribute('data-source') || content;
+      return '\n```mermaid\n' + source.trim() + '\n```\n';
+    }
+  });
+
+  // Rule to preserve sticky notes as raw HTML
+  turndownService.addRule('sticky', {
+    filter: function (node) {
+      return node.classList && node.classList.contains('sticky-note');
+    },
+    replacement: function (content, node) {
+      return '\n' + node.outerHTML + '\n';
+    }
+  });
 }
 
 function insertMarkdown(prefix, suffix) {
@@ -64,7 +83,6 @@ function insertMarkdown(prefix, suffix) {
         var selectedText = selection.toString();
         var content = prefix + (selectedText || 'text') + suffix;
         
-        // Remove selection and insert new pattern
         range.deleteContents();
         range.insertNode(document.createTextNode(content));
       }
@@ -86,7 +104,6 @@ function insertMarkdown(prefix, suffix) {
   textarea.selectionEnd = textarea.selectionStart + selected.length;
   textarea.focus();
   
-  // Trigger update for live preview if active
   isDirty = true;
   triggerAutosave();
   if (previewOn) togglePreview(true);
@@ -197,17 +214,11 @@ function triggerAutosave() {
 }
 
 function syncPreviewToText() {
-  if (!turndownService) return;
+  if (!turndownService || !fullPreview) return;
   var preview = document.getElementById('previewArea');
   var textarea = document.getElementById('noteText');
   
-  // Clone to avoid messing with the visible UI
-  var clone = preview.cloneNode(true);
-  
-  // Remove UI-only elements from the clone so they don't end up in the Markdown
-  clone.querySelectorAll('.edit-draw-btn, .mermaid, .vditor-copy').forEach(el => el.remove());
-  
-  var markdown = turndownService.turndown(clone.innerHTML);
+  var markdown = turndownService.turndown(preview.innerHTML);
   textarea.value = markdown;
   isDirty = true;
   triggerAutosave();
@@ -321,55 +332,55 @@ document.addEventListener('DOMContentLoaded', function() {
                 event.stopPropagation();
               });
             
-              document.getElementById('imageDropdownBtn').addEventListener('click', function(event) {
-                document.getElementById('imageDropdownContent').classList.toggle('show');
-                event.stopPropagation();
-              });
-            
-                              document.getElementById('insertToggleBtn').addEventListener('click', function(event) {
-                              document.getElementById('insertDropdownContent').classList.toggle('show');
+                            document.getElementById('imageDropdownBtn').addEventListener('click', function(event) {
+                              document.getElementById('imageDropdownContent').classList.toggle('show');
                               event.stopPropagation();
-                            });          
-              
-                            var liveToggle = document.getElementById('livePreviewToggle');
-                            if (liveToggle) {
-                              liveToggle.addEventListener('click', function() {
-                                if (!previewOn || fullPreview) {
-                                  previewOn = true;
-                                  fullPreview = false;
-                                } else {
-                                  previewOn = false;
+                            });
+                          
+                                            document.getElementById('insertToggleBtn').addEventListener('click', function(event) {
+                                            document.getElementById('insertDropdownContent').classList.toggle('show');
+                                            event.stopPropagation();
+                                          });          
+                            
+                                          var liveToggle = document.getElementById('livePreviewToggle');
+                                          if (liveToggle) {
+                                            liveToggle.addEventListener('click', function() {
+                                              if (!previewOn || fullPreview) {
+                                                previewOn = true;
+                                                fullPreview = false;
+                                              } else {
+                                                previewOn = false;
+                                              }
+                                              togglePreview(previewOn);
+                                            });
+                                          }
+                            
+                                          var fullToggle = document.getElementById('fullPreviewToggle');
+                                          if (fullToggle) {
+                                            fullToggle.addEventListener('click', function() {
+                                              if (!previewOn || !fullPreview) {
+                                                previewOn = true;
+                                                fullPreview = true;
+                                              } else {
+                                                previewOn = false;
+                                                fullPreview = false;
+                                              }
+                                              togglePreview(previewOn);
+                                            });
+                                          }
+                            
+                                          // Close the dropdown if the user clicks outside of it
+                                          window.onclick = function(event) {
+                              if (!event.target.matches('.dropbtn')) {
+                                var dropdowns = document.getElementsByClassName("dropdown-content");
+                                for (var i = 0; i < dropdowns.length; i++) {
+                                  var openDropdown = dropdowns[i];
+                                  if (openDropdown.classList.contains('show')) {
+                                    openDropdown.classList.remove('show');
+                                  }
                                 }
-                                togglePreview(previewOn);
-                              });
+                              }
                             }
-              
-                            var fullToggle = document.getElementById('fullPreviewToggle');
-                            if (fullToggle) {
-                              fullToggle.addEventListener('click', function() {
-                                if (!previewOn || !fullPreview) {
-                                  previewOn = true;
-                                  fullPreview = true;
-                                } else {
-                                  previewOn = false;
-                                  fullPreview = false;
-                                }
-                                togglePreview(previewOn);
-                              });
-                            }
-              
-                            // Close the dropdown if the user clicks outside of it
-                            window.onclick = function(event) {
-                if (!event.target.matches('.dropbtn')) {
-                  var dropdowns = document.getElementsByClassName("dropdown-content");
-                  for (var i = 0; i < dropdowns.length; i++) {
-                    var openDropdown = dropdowns[i];
-                    if (openDropdown.classList.contains('show')) {
-                      openDropdown.classList.remove('show');
-                    }
-                  }
-                }
-              }
             
               document.getElementById('addTextSticky').addEventListener('click', function(e) { e.preventDefault(); addSticky(); });
               document.getElementById('addDrawingSticky').addEventListener('click', function(e) { e.preventDefault(); addDrawSticky(); });
@@ -1149,7 +1160,9 @@ function togglePreview(on) {
       preview.querySelectorAll('pre code.language-mermaid').forEach(function(codeBlock) {
         var mermaidDiv = document.createElement('div');
         mermaidDiv.classList.add('mermaid');
-        mermaidDiv.textContent = codeBlock.textContent;
+        var source = codeBlock.textContent;
+        mermaidDiv.textContent = source;
+        mermaidDiv.setAttribute('data-source', source); // Store source for turndown
         codeBlock.parentNode.replaceChild(mermaidDiv, codeBlock);
       });
       if (typeof mermaid !== 'undefined') {
