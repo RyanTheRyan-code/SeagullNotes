@@ -29,16 +29,19 @@
   
   <div id="mainLayout">
     <div id="sidebar">
-      <h3>Notes</h3>
+      <div id="sidebarHeader">
+        <h3>Notes</h3>
+        <button type="button" id="closeSidebarBtn">✕</button>
+      </div>
       <input type="search" id="searchInput" placeholder="Search notes..." style="width: 100%; margin-bottom: 8px;">
       <div id="breadcrumb"></div>
       <ul id="notesList"></ul>
     </div>
     <div id="content">
       <div id="toolbar">
-        <button type="button" id="saveBtn">Save</button>
-        <button type="button" id="deleteBtn">Delete</button>
-        <button type="button" id="previewToggle">Preview</button>
+        <button type="button" id="saveBtn" title="Save current note to GitHub">Save</button>
+        <button type="button" id="deleteBtn" title="Delete current note from GitHub">Delete</button>
+        <button type="button" id="previewToggle" title="Toggle between Editor and Preview modes">Preview</button>
 
         <div class="dropdown">
           <button class="dropbtn" id="fileDropdownBtn">File</button>
@@ -46,6 +49,7 @@
             <a href="#" id="fileDropdownNewNoteBtn">New Note</a>
             <a href="#" id="fileDropdownNewFolderBtn">New Folder</a>
             <a href="#" id="fileDropdownNewWhiteboardBtn">New Whiteboard</a>
+            <a href="#" id="fileDropdownDownloadBtn">Download Note</a>
             <a href="#" id="fileDropdownRefreshNotesBtn">Refresh List</a>
           </div>
         </div>
@@ -66,7 +70,10 @@
             <a href="#" id="addDrawingSticky">Drawing (Sticky)</a>
             <a href="#" id="addImageSticky">Image (Sticky)</a>
             <a href="#" id="addWhiteboardSticky">Whiteboard (Sticky)</a>
-            <a href="#" id="addDiagramBtn">Insert Diagram</a>
+            <a href="#" onclick="addMermaidTemplate('flow')">Flowchart</a>
+            <a href="#" onclick="addMermaidTemplate('seq')">Sequence Diagram</a>
+            <a href="#" onclick="addMermaidTemplate('gantt')">Gantt Chart</a>
+            <a href="#" onclick="addMermaidTemplate('class')">Class Diagram</a>
             <a href="#" id="placeWhiteboardBtn">Place Whiteboard</a>
           </div>
         </div>
@@ -83,6 +90,7 @@
         <button type="button" title="Link" onmousedown="event.preventDefault()" onclick="insertMarkdown('[', '](https://)')">🔗</button>
         <button type="button" title="Unordered List" onmousedown="event.preventDefault()" onclick="insertMarkdown('- ', '')">•</button>
         <button type="button" title="Ordered List" onmousedown="event.preventDefault()" onclick="insertMarkdown('1. ', '')">1.</button>
+        <button type="button" title="Selection to Sticky" onmousedown="event.preventDefault()" onclick="selectionToSticky()">📌</button>
         <span class="toolbar-separator">|</span>
         <button type="button" id="livePreviewToggle" title="Toggle Side-by-Side Preview">👁️ Live</button>
         <button type="button" id="fullPreviewToggle" title="Toggle Full Screen Preview">🖥️ Full View</button>

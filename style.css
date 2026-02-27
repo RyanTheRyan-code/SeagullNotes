@@ -7,7 +7,9 @@ body { font-family: sans-serif; margin: 0; }
 #settings input, #settings button { margin-right: 6px; }
 #mainLayout { display: flex; min-height: 80vh; }
 #sidebar { width: 240px; border-right: 1px solid #ccc; padding: 10px; overflow-y: auto; }
-#sidebar h3 { margin: 0 0 8px 0; font-size: 1em; }
+#sidebarHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+#sidebarHeader h3 { margin: 0; font-size: 1em; }
+#closeSidebarBtn { display: none; background: none; border: none; font-size: 1.2em; cursor: pointer; padding: 0 5px; }
 #sidebar button { margin-bottom: 6px; }
 #notesList { list-style: none; padding: 0; margin: 0; }
 #notesList li { padding: 4px 8px; cursor: pointer; border-radius: 3px; }
@@ -15,6 +17,18 @@ body { font-family: sans-serif; margin: 0; }
 #notesList li.folder { font-weight: bold; }
 #notesList li.file { padding-left: 16px; }
 #notesList li mark { background: #ffeb3b; padding: 0 2px; border-radius: 2px; color: black; }
+
+.internal-link {
+  color: #007bff;
+  text-decoration: none;
+  border-bottom: 1px dashed #007bff;
+}
+
+.internal-link:hover {
+  background-color: #e7f3ff;
+  border-bottom-style: solid;
+}
+
 #breadcrumb { font-size: 0.85em; color: #666; margin-bottom: 8px; }
 #content { flex: 1; padding: 12px; display: flex; flex-direction: column; }
 #toolbar { margin-bottom: 8px; }
@@ -257,6 +271,7 @@ body { font-family: sans-serif; margin: 0; }
     body.sidebar-open #sidebar {
       transform: translateX(0);
     }
+    #closeSidebarBtn { display: block; }
     #content { margin-left: 0; }
     #menuToggleBtn { display: block; } /* Show hamburger menu on small screens */
   }
