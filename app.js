@@ -39,27 +39,35 @@ if (turndownService) {
       return '\n```mermaid\n' + source.trim() + '\n```\n';
     }
   });
-  turndownService.addRule('sticky', {
-    filter: function (node) { return node.classList && node.classList.contains('sticky-note'); },
-    replacement: function (content, node) {
-      var cleanNode = node.cloneNode(true);
-      cleanNode.removeAttribute('data-initialized');
-      cleanNode.removeAttribute('data-original-html');
-      cleanNode.style.cursor = '';
-      return '\n' + cleanNode.outerHTML + '\n';
-    }
-  });
-  turndownService.addRule('internalLink', {
-    filter: function (node) { return node.classList && node.classList.contains('internal-link'); },
-    replacement: function (content, node) { return '[[' + content + ']]'; }
-  });
-}
+            turndownService.addRule('sticky', {
+              filter: function (node) { return node.classList && node.classList.contains('sticky-note'); },
+              replacement: function (content, node) {
+                // Create a clean version for saving
+                var cleanNode = node.cloneNode(true);
+                cleanNode.removeAttribute('data-initialized');
+                cleanNode.removeAttribute('data-original-html');
+                cleanNode.style.cursor = '';
+                
+                // CRITICAL: Get text from the LIVE node (not the clone) to preserve line breaks
+                var inner = cleanNode.querySelector('.sticky-content');
+                if (inner) {
+                  inner.textContent = node.innerText || node.textContent; 
+                }
+                
+                return '\n\n' + cleanNode.outerHTML + '\n\n';
+              }
+            });    turndownService.addRule('internalLink', {
+      filter: function (node) { return node.classList && node.classList.contains('internal-link'); },
+      replacement: function (content, node) { return '[[' + content + ']]'; }
+    });
+  }
 
 // --- CORE UTILITIES ---
 
 function getToken() { return localStorage.getItem(TOKEN_KEY); }
 function setToken(v) { if (v && v.trim()) { localStorage.setItem(TOKEN_KEY, v.trim()); document.getElementById('tokenInput').value = ''; showStatus('Token saved.', true); } }
 function clearToken() { localStorage.removeItem(TOKEN_KEY); document.getElementById('tokenInput').value = ''; document.getElementById('noteText').value = ''; document.getElementById('pathInput').value = ''; openFilePath = null; openFileSha = null; showStatus('Logged out.', true); refreshNotesList(); }
+function getRepo() { return { owner: repoOwner, name: repoName }; }
 function setRepo(o, n) { repoOwner = (o || '').trim(); repoName = (n || '').trim(); if (repoOwner) localStorage.setItem(REPO_OWNER_KEY, repoOwner); if (repoName) localStorage.setItem(REPO_NAME_KEY, repoName); updateRepoDisplay(); refreshNotesList(); openFilePath = null; openFileSha = null; }
 function updateRepoDisplay() { var el = document.getElementById('repoDisplay'); if (el) el.textContent = 'Saving to: ' + repoOwner + '/' + repoName + (repoOwner === 'YOUR_GITHUB_USERNAME' ? ' — set above' : ''); }
 function base64Utf8(t) { return btoa(unescape(encodeURIComponent(t || ''))); }
@@ -79,6 +87,7 @@ function debounce(func, delay) { let t; return function(...args) { clearTimeout(
 function insertMarkdown(prefix, suffix) {
   var textarea = document.getElementById('noteText'), preview = document.getElementById('previewArea');
   if (fullPreview && !preview.classList.contains('hidden')) {
+    preview.focus(); 
     if (prefix === '**') document.execCommand('bold');
     else if (prefix === '*') document.execCommand('italic');
     else if (prefix === '# ') document.execCommand('formatBlock', false, 'H1');
@@ -146,13 +155,13 @@ function togglePreview(on) {
     if (fullPreview) {
       textarea.classList.remove('side-by-side'); preview.classList.remove('side-by-side');
       textarea.classList.add('full-view'); preview.classList.add('full-view');
+      preview.contentEditable = "true";
     } else {
       textarea.classList.remove('full-view'); preview.classList.remove('full-view');
       textarea.classList.add('side-by-side'); preview.classList.add('side-by-side');
       preview.contentEditable = "false";
     }
     preview.classList.remove('hidden');
-    if (fullPreview) preview.contentEditable = "true";
     var content = textarea.value, path = document.getElementById('pathInput').value || '', isMd = path === '' || path.endsWith('.md'); 
     if (typeof marked !== 'undefined' && isMd) {
       var parsedContent = parseNoteLinks(content || '');
@@ -176,7 +185,9 @@ function togglePreview(on) {
           .then(res => res.blob()).then(blob => { img.src = URL.createObjectURL(blob); }).catch(()=>{});
       });
     } else { preview.textContent = content || ''; }
+    if (fullPreview) { preview.style.minHeight = "100%"; preview.focus(); }
   } else {
+    if (fullPreview) syncPreviewToText();
     textarea.classList.remove('side-by-side', 'full-view');
     preview.classList.remove('side-by-side', 'full-view');
     preview.classList.add('hidden');
@@ -208,7 +219,14 @@ function initDraggableStickies() {
     s.addEventListener('mousedown', e => { if (e.target.tagName.toLowerCase() === 'button' || e.target.classList.contains('sticky-content')) return; window.currentDraggedSticky = s; window.dragStartX = e.clientX; window.dragStartY = e.clientY; window.dragInitialLeft = parseInt(s.style.left || s.getAttribute('data-x') || 0, 10); window.dragInitialTop = parseInt(s.style.top || s.getAttribute('data-y') || 0, 10); s.style.cursor = 'grabbing'; });
     var cnt = s.querySelector('.sticky-content');
     if (cnt) {
-      cnt.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); document.execCommand('insertLineBreak'); return false; } }, true);
+      cnt.addEventListener('keydown', e => { 
+        if (e.key === 'Enter') { 
+          e.preventDefault(); e.stopPropagation(); 
+          document.execCommand('insertLineBreak'); 
+          cnt.dispatchEvent(new Event('input', { bubbles: true }));
+          return false; 
+        } 
+      }, true);
       cnt.addEventListener('blur', () => { if (fullPreview) syncPreviewToText(); else { var oh = s.getAttribute('data-original-html'), nh = s.outerHTML; if (oh && tx.value.includes(oh)) { tx.value = tx.value.replace(oh, nh); s.setAttribute('data-original-html', nh); isDirty = true; triggerAutosave(); } } });
     }
     s.setAttribute('data-initialized', 'true');
@@ -216,6 +234,8 @@ function initDraggableStickies() {
 }
 
 // --- WHITEBOARD & SVG LOGIC ---
+
+function getMousePos(svg, e) { var c = svg.getScreenCTM(); return c ? { x: (e.clientX - c.e) / c.a, y: (e.clientY - c.f) / c.d } : { x: 0, y: 0 }; }
 
 function setupSvgDrawing(svg) {
   if (!svg) return; var isDr = false;
@@ -240,7 +260,7 @@ function erase(svg, e) { var t = document.elementFromPoint(e.clientX, e.clientY)
 
 function cropSvg(s) {
   var p = new DOMParser(), d = p.parseFromString(s, "image/svg+xml"), svg = d.documentElement, box = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-  var els = svg.querySelectorAll('path, rect, circle'); if (els.length === 0) return s; els.forEach(el => { if (el.tagName.toLowerCase() === 'path') { el.getAttribute('d').split(/(?=[LMCHVZ])/).forEach(c => { var pts = c.slice(1).trim().split(/[\s,]+/); var x = parseFloat(pts[pts.length - 2]), y = parseFloat(pts[pts.length - 1]); if (!isNaN(x) && !isNaN(y)) { box.minX = Math.min(box.minX, x); box.minY = Math.min(box.minY, y); box.maxX = Math.max(box.maxX, x); box.maxY = Math.max(bbox.maxY, y); } }); } else if (el.tagName.toLowerCase() === 'rect') { var x = parseFloat(el.getAttribute('x')), y = parseFloat(el.getAttribute('y')), w = parseFloat(el.getAttribute('width')), h = parseFloat(el.getAttribute('height')); box.minX = Math.min(box.minX, x); box.minY = Math.min(box.minY, y); box.maxX = Math.max(box.maxX, x + w); box.maxY = Math.max(box.maxY, y + h); } else if (el.tagName.toLowerCase() === 'circle') { var cx = parseFloat(el.getAttribute('cx')), cy = parseFloat(el.getAttribute('cy')), r = parseFloat(el.getAttribute('r')); box.minX = Math.min(box.minX, cx - r); box.minY = Math.min(box.minY, cy - r); box.maxX = Math.max(box.maxX, cx + r); box.maxY = Math.max(box.maxY, cy + r); } });
+  var els = svg.querySelectorAll('path, rect, circle'); if (els.length === 0) return s; els.forEach(el => { if (el.tagName.toLowerCase() === 'path') { el.getAttribute('d').split(/(?=[LMCHVZ])/).forEach(c => { var pts = c.slice(1).trim().split(/[\s,]+/); var x = parseFloat(pts[pts.length - 2]), y = parseFloat(pts[pts.length - 1]); if (!isNaN(x) && !isNaN(y)) { box.minX = Math.min(box.minX, x); box.minY = Math.min(box.minY, y); box.maxX = Math.max(box.maxX, x); box.maxY = Math.max(box.maxY, y); } }); } else if (el.tagName.toLowerCase() === 'rect') { var x = parseFloat(el.getAttribute('x')), y = parseFloat(el.getAttribute('y')), w = parseFloat(el.getAttribute('width')), h = parseFloat(el.getAttribute('height')); box.minX = Math.min(box.minX, x); box.minY = Math.min(box.minY, y); box.maxX = Math.max(box.maxX, x + w); box.maxY = Math.max(box.maxY, y + h); } else if (el.tagName.toLowerCase() === 'circle') { var cx = parseFloat(el.getAttribute('cx')), cy = parseFloat(el.getAttribute('cy')), r = parseFloat(el.getAttribute('r')); box.minX = Math.min(box.minX, cx - r); box.minY = Math.min(box.minY, cy - r); box.maxX = Math.max(box.maxX, cx + r); box.maxY = Math.max(box.maxY, cy + r); } });
   var pad = 10, x = box.minX - pad, y = box.minY - pad, w = box.maxX - box.minX + pad * 2, h = box.maxY - box.minY + pad * 2;
   svg.setAttribute('viewBox', x + ' ' + y + ' ' + w + ' ' + h); return new XMLSerializer().serializeToString(svg);
 }
@@ -274,6 +294,29 @@ function showWhiteboardModal(asS) { isPlacingAsSticky = !!asS; var m = document.
 function placeWhiteboardAsSticky(p) { fetch(apiUrl('contents/' + p), { headers: authHeaders() }).then(res => res.json()).then(d => { var svg = decodeBase64Utf8(d.content); var h = '\n\n<div class="sticky-note sticky-draw" data-x="20" data-y="20" style="left: 20px; top: 20px;"><div class="draw-preview">' + svg + '</div><button class="edit-draw-btn" onclick="window.openDrawScreen(this.parentElement)">✏️ Edit</button></div>\n\n'; document.getElementById('noteText').value += h; if (previewOn) togglePreview(true); document.getElementById('whiteboardModal').classList.add('hidden'); }); }
 function placeWhiteboard(p) { fetch(apiUrl('contents/' + p), { headers: authHeaders() }).then(res => res.json()).then(d => { var svg = decodeBase64Utf8(d.content); var u = 'data:image/svg+xml;base64,' + btoa(svg); document.getElementById('noteText').value += '![](' + u + ')'; document.getElementById('whiteboardModal').classList.add('hidden'); }); }
 function placeCurrentDrawingAsSticky() { if (!isWhiteboardActive) { showStatus("No drawing.", false); return; } var inner = mainWhiteboardSvg.innerHTML; if (!inner.trim()) { showStatus("Empty.", false); return; } var full = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">' + inner + '</svg>'; var cr = cropSvg(full); var h = '\n\n<div class="sticky-note sticky-draw" data-x="20" data-y="20" style="left: 20px; top: 20px;"><div class="draw-preview">' + cr + '</div><button class="edit-draw-btn" onclick="window.openDrawScreen(this.parentElement)">✏️ Edit</button></div>\n\n'; var tx = document.getElementById('noteText'); tx.value = tx.value.slice(0, tx.selectionStart) + h + tx.value.slice(tx.selectionEnd); toggleWhiteboard(false); togglePreview(true); showStatus('Drawing pinned.', true); }
+
+window.openDrawScreen = function(stickyEl) {
+  document.getElementById('top').classList.add('hidden');
+  document.getElementById('mainLayout').classList.add('hidden');
+  document.getElementById('drawScreen').classList.remove('hidden');
+  var preview = stickyEl.querySelector('.draw-preview');
+  var svgContent = preview && preview.innerHTML.trim() !== '' ? preview.innerHTML : EMPTY_SVG;
+  var tempDiv = document.createElement('div');
+  tempDiv.innerHTML = svgContent;
+  var loadedSvg = tempDiv.querySelector('svg');
+  modalSvgBoard.innerHTML = loadedSvg ? loadedSvg.innerHTML : '';
+  activeStickyHtml = stickyEl.outerHTML;
+  var modalStroke = document.getElementById('modalStrokeColorInput');
+  if (modalStroke) modalStroke.value = currentStrokeColor;
+  updateToolSelection();
+};
+
+function closeDrawScreen() {
+  document.getElementById('drawScreen').classList.add('hidden');
+  document.getElementById('top').classList.remove('hidden');
+  document.getElementById('mainLayout').classList.remove('hidden');
+  activeStickyHtml = null;
+}
 
 function updateToolSelection() {
   var activeIdMap = { 'pen': 'penToolBtn', 'rectangle': 'rectToolBtn', 'circle': 'circleToolBtn', 'eraser': 'eraserToolBtn' };
@@ -339,5 +382,24 @@ document.addEventListener('DOMContentLoaded', function() {
   var sInp = document.getElementById('strokeColorInput'); if (sInp) sInp.addEventListener('input', function() { currentStrokeColor = this.value; var m = document.getElementById('modalStrokeColorInput'); if (m) m.value = this.value; });
   var msInp = document.getElementById('modalStrokeColorInput'); if (msInp) msInp.addEventListener('input', function() { currentStrokeColor = this.value; var s = document.getElementById('strokeColorInput'); if (s) s.value = this.value; });
   document.querySelectorAll('.dropdown-content a').forEach(link => link.addEventListener('click', closeAllDropdowns));
+  
+  var clearD = document.getElementById('clearDrawBtn'); if (clearD) clearD.addEventListener('click', () => modalSvgBoard.innerHTML = '');
+  var cancelD = document.getElementById('cancelDrawScreenBtn'); if (cancelD) cancelD.addEventListener('click', closeDrawScreen);
+  var saveD = document.getElementById('saveDrawScreenBtn');
+  if (saveD) saveD.addEventListener('click', function() {
+    if (activeStickyHtml && modalSvgBoard) {
+      var finalSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="100%" height="100%">' + modalSvgBoard.innerHTML + '</svg>';
+      var cropped = cropSvg(finalSvg);
+      var temp = document.createElement('div'); temp.innerHTML = activeStickyHtml;
+      var stick = temp.firstElementChild;
+      var dp = stick ? stick.querySelector('.draw-preview') : null;
+      if (dp) dp.innerHTML = cropped;
+      var newH = stick ? stick.outerHTML : '';
+      var tx = document.getElementById('noteText');
+      if (tx && newH && tx.value.includes(activeStickyHtml)) { tx.value = tx.value.replace(activeStickyHtml, newH); }
+      closeDrawScreen(); togglePreview(true);
+    }
+  });
+
   updateToolSelection(); refreshNotesList();
 });
