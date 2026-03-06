@@ -31,13 +31,29 @@
     <div id="sidebar">
       <div id="sidebarHeader">
         <h3>Notes</h3>
+        <button type="button" id="dailyNoteBtn" title="Open or create today's note">📅 Today</button>
         <button type="button" id="closeSidebarBtn">✕</button>
       </div>
       <input type="search" id="searchInput" placeholder="Search notes..." style="width: 100%; margin-bottom: 8px;">
       <div id="breadcrumb"></div>
+      <div id="recentNotesSection" class="sidebar-section">
+        <h4>Recent</h4>
+        <ul id="recentNotesList"></ul>
+      </div>
+      <div id="tagsSection" class="sidebar-section">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+          <h4>Tags</h4>
+          <button type="button" id="reindexBtn" title="Re-index all notes to find tags/links" style="font-size: 0.7em; padding: 2px 5px; cursor: pointer;">🔄 Re-index</button>
+        </div>
+        <div id="tagsList"></div>
+      </div>
       <ul id="notesList"></ul>
     </div>
     <div id="content">
+      <div id="backlinksPane" class="hidden">
+        <h4>Backlinks</h4>
+        <ul id="backlinksList"></ul>
+      </div>
       <div id="toolbar">
         <button type="button" id="saveBtn" title="Save current note to GitHub">Save</button>
         <button type="button" id="deleteBtn" title="Delete current note from GitHub">Delete</button>
@@ -157,6 +173,17 @@
       </div>
       <button type="button" id="cancelImageLibraryBtn">Cancel</button>
     </div>
+  </div>
+
+  <div id="quickSwitcherModal" class="hidden">
+    <div id="quickSwitcherContent">
+      <input type="text" id="quickSwitcherInput" placeholder="Quick Search (Ctrl+P)..." autocomplete="off">
+      <ul id="quickSwitcherResults"></ul>
+    </div>
+  </div>
+
+  <div id="autoCompleteDropdown" class="hidden">
+    <ul id="autoCompleteList"></ul>
   </div>
 
   <script src="app.js"></script>

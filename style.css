@@ -9,7 +9,43 @@ body { font-family: sans-serif; margin: 0; }
 #sidebar { width: 240px; border-right: 1px solid #ccc; padding: 10px; overflow-y: auto; }
 #sidebarHeader { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 #sidebarHeader h3 { margin: 0; font-size: 1em; }
+#dailyNoteBtn {
+  background: #eee;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.8em;
+  cursor: pointer;
+  margin-left: auto;
+  margin-right: 8px;
+}
+#dailyNoteBtn:hover { background: #ddd; }
 #closeSidebarBtn { display: none; background: none; border: none; font-size: 1.2em; cursor: pointer; padding: 0 5px; }
+
+.sidebar-section {
+  margin-bottom: 15px;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 10px;
+}
+.sidebar-section h4 {
+  margin: 0 0 5px 0;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  color: #888;
+}
+#recentNotesList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+#recentNotesList li {
+  font-size: 0.9em;
+  padding: 2px 8px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+#recentNotesList li:hover { background: #eee; }
+
 #sidebar button { margin-bottom: 6px; }
 #notesList { list-style: none; padding: 0; margin: 0; }
 #notesList li { padding: 4px 8px; cursor: pointer; border-radius: 3px; }
@@ -112,8 +148,8 @@ body { font-family: sans-serif; margin: 0; }
 .sticky-note:active { cursor: grabbing; }
   
   .sticky-draw { background: #e3f2fd; border-color: #90caf9; display: flex; flex-direction: column; }
-  .sticky-image { padding: 0; background: #fafafa; }
-  .sticky-image img { width: 100%; height: 100%; object-fit: cover; }
+  .sticky-image { padding: 20px 0 0 0; background: #fafafa; }
+  .sticky-image img { width: 100%; height: calc(100% - 20px); object-fit: cover; display: block; }
   .draw-preview { flex: 1; width: 100%; overflow: hidden; pointer-events: none; background: #fff; border-bottom: 1px solid #90caf9; display: flex; align-items: center; justify-content: center; }  .draw-preview svg { width: 100%; height: 100%; display: block; }
   
   .edit-draw-btn { width: 100%; height: 28px; font-size: 0.9em; cursor: pointer; border: none; background: #bbdefb; }
@@ -252,6 +288,65 @@ body { font-family: sans-serif; margin: 0; }
   .dropdown-content a:hover { background-color: #f1f1f1; }
   .show { display: block; }
   
+  /* Quick Switcher */
+  #quickSwitcherModal {
+    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+    background: rgba(0,0,0,0.5); z-index: 5000;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding-top: 10vh;
+  }
+  #quickSwitcherContent {
+    background: #fff; width: 90%; max-width: 600px;
+    border-radius: 8px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+  }
+  #quickSwitcherInput {
+    width: 100%; border: none; padding: 15px; font-size: 1.2em;
+    outline: none; border-bottom: 1px solid #eee;
+  }
+  #quickSwitcherResults {
+    list-style: none; padding: 0; margin: 0; max-height: 50vh; overflow-y: auto;
+  }
+  #quickSwitcherResults li {
+    padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #f9f9f9;
+  }
+  #quickSwitcherResults li.selected { background: #e7f3ff; }
+  #quickSwitcherResults li:hover { background: #f1f1f1; }
+
+  /* Auto-complete */
+  #autoCompleteDropdown {
+    position: fixed; top: 150px; left: 300px;
+    background: #fff; min-width: 200px;
+    border: 1px solid #ccc; border-radius: 4px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    z-index: 6000;
+  }
+  #autoCompleteList {
+    list-style: none; padding: 0; margin: 0;
+  }
+  #autoCompleteList li {
+    padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #f9f9f9;
+  }
+  #autoCompleteList li.selected { background: #e7f3ff; }
+  #autoCompleteList li:hover { background: #f1f1f1; }
+
+  /* Backlinks & Tags */
+  #backlinksPane {
+    background: #f9f9f9; padding: 10px; border: 1px solid #eee; border-radius: 4px; margin-bottom: 10px;
+  }
+  #backlinksPane h4 { margin: 0 0 5px 0; font-size: 0.85em; color: #888; text-transform: uppercase; }
+  #backlinksList { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  #backlinksList li {
+    background: #fff; border: 1px solid #ccc; border-radius: 4px; padding: 4px 10px; font-size: 0.85em; cursor: pointer;
+  }
+  #backlinksList li:hover { background: #eee; }
+  
+  .tag {
+    display: inline-block; background: #e7f3ff; color: #007bff;
+    padding: 2px 8px; border-radius: 12px; font-size: 0.8em; margin: 2px;
+    cursor: pointer;
+  }
+  .tag:hover { background: #007bff; color: white; }
+
   /* Mobile responsiveness */
   #menuToggleBtn {
     display: none; /* Hide on desktop by default */

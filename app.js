@@ -2,6 +2,47 @@ var TOKEN_KEY = 'github_token';
 var REPO_OWNER_KEY = 'repo_owner';
 var REPO_NAME_KEY = 'repo_name';
 var NOTES_DIR = 'notes';
+var RECENT_NOTES_KEY = 'recent_notes';
+var VAULT_INDEX_KEY = 'vault_index';
+
+function getVaultIndex() { return JSON.parse(localStorage.getItem(VAULT_INDEX_KEY) || '{}'); }
+function saveVaultIndex(idx) { localStorage.setItem(VAULT_INDEX_KEY, JSON.stringify(idx)); }
+
+function indexNote(path, content) {
+  var idx = getVaultIndex();
+  // Don't index tags in SVGs to avoid hex colors
+  var tags = [];
+  if (!path.endsWith('.svg')) {
+    // Only match tags that start with a letter and are preceded by whitespace or start of line
+    // This naturally excludes hex codes in attributes like stroke="#2c3e50"
+    var matches = content.matchAll(/(?:^|\s)#([a-zA-Z][\w/-]*)/g);
+    tags = [...new Set([...matches].map(m => '#' + m[1]))];
+  }
+  var links = [...new Set((content.match(/\[\[(.*?)\]\]/g) || []).map(m => {
+    var link = m.slice(2, -2).trim();
+    return link.endsWith('.md') || link.endsWith('.txt') ? link.split('.')[0] : link;
+  }))];
+  idx[path] = { tags: tags, links: links };
+  saveVaultIndex(idx);
+  updateTagsSidebar();
+}
+
+function updateRecentNotes(p) {
+  var recents = JSON.parse(localStorage.getItem(RECENT_NOTES_KEY) || '[]');
+  recents = recents.filter(r => r !== p);
+  recents.unshift(p);
+  recents = recents.slice(0, 5);
+  localStorage.setItem(RECENT_NOTES_KEY, JSON.stringify(recents));
+  updateRecentNotesUI();
+}
+
+function updateRecentNotesUI() {
+  var recents = JSON.parse(localStorage.getItem(RECENT_NOTES_KEY) || '[]');
+  var list = document.getElementById('recentNotesList');
+  if (recents.length === 0) { document.getElementById('recentNotesSection').classList.add('hidden'); return; }
+  document.getElementById('recentNotesSection').classList.remove('hidden');
+  list.innerHTML = recents.map(r => `<li onclick="openNote('${r}')">${r.replace(NOTES_DIR + '/', '')}</li>`).join('');
+}
 
 var EMPTY_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="100%" height="100%"></svg>';
 
@@ -51,7 +92,12 @@ if (turndownService) {
                 // CRITICAL: Get text from the LIVE node (not the clone) to preserve line breaks
                 var inner = cleanNode.querySelector('.sticky-content');
                 if (inner) {
-                  inner.textContent = node.innerText || node.textContent; 
+                  // For image or draw stickies, preserve their specific inner HTML if they have a wrapper
+                  if (node.classList.contains('sticky-image') || node.classList.contains('sticky-draw')) {
+                    inner.innerHTML = node.querySelector('.sticky-content').innerHTML;
+                  } else {
+                    inner.textContent = node.innerText || node.textContent; 
+                  }
                 }
                 
                 return '\n\n' + cleanNode.outerHTML + '\n\n';
@@ -81,6 +127,7 @@ function defaultFilename() { var now = new Date(); return 'note-' + now.getFullY
 function triggerAutosave() { clearTimeout(autosaveTimer); autosaveTimer = setTimeout(() => { if (isDirty && openFilePath) { saveNote(true); isDirty = false; } }, 3000); }
 function closeAllDropdowns() { var ds = document.getElementsByClassName("dropdown-content"); for (var i = 0; i < ds.length; i++) ds[i].classList.remove('show'); }
 function debounce(func, delay) { let t; return function(...args) { clearTimeout(t); t = setTimeout(() => func.apply(this, args), delay); }; }
+var debouncedSearch = debounce(searchGithub, 1000);
 
 // --- EDITOR & PREVIEW LOGIC ---
 
@@ -214,9 +261,23 @@ function initDraggableStickies() {
   }
   ss.forEach(s => {
     if (s.getAttribute('data-initialized') === 'true') return;
-    if (!s.querySelector('.sticky-content')) { var c = s.innerHTML; s.innerHTML = '<div class="sticky-content" contenteditable="true">' + c + '</div>'; s.contentEditable = "false"; }
+    
+    // Capture original HTML BEFORE any runtime modifications
     s.setAttribute('data-original-html', s.outerHTML);
-    s.addEventListener('mousedown', e => { if (e.target.tagName.toLowerCase() === 'button' || e.target.classList.contains('sticky-content')) return; window.currentDraggedSticky = s; window.dragStartX = e.clientX; window.dragStartY = e.clientY; window.dragInitialLeft = parseInt(s.style.left || s.getAttribute('data-x') || 0, 10); window.dragInitialTop = parseInt(s.style.top || s.getAttribute('data-y') || 0, 10); s.style.cursor = 'grabbing'; });
+    
+    // specialized stickies don't need the default text wrapper
+    if (!s.querySelector('.sticky-content') && !s.classList.contains('sticky-image') && !s.classList.contains('sticky-draw')) { 
+      var c = s.innerHTML; s.innerHTML = '<div class="sticky-content" contenteditable="true">' + c + '</div>'; s.contentEditable = "false"; 
+    }
+    
+    s.addEventListener('mousedown', e => { 
+      if (e.target.tagName.toLowerCase() === 'button' || e.target.classList.contains('sticky-content')) return; 
+      window.currentDraggedSticky = s; window.dragStartX = e.clientX; window.dragStartY = e.clientY; 
+      window.dragInitialLeft = parseInt(s.style.left || s.getAttribute('data-x') || 0, 10); 
+      window.dragInitialTop = parseInt(s.style.top || s.getAttribute('data-y') || 0, 10); 
+      s.style.cursor = 'grabbing'; 
+    });
+    
     var cnt = s.querySelector('.sticky-content');
     if (cnt) {
       cnt.addEventListener('keydown', e => { 
@@ -269,16 +330,172 @@ function cropSvg(s) {
 
 function searchGithub(q) { if (!getToken()) return; showStatus('Searching GitHub...', true); var loc = fullNotesTree.filter(e => e.path.toLowerCase().includes(q.toLowerCase())); if (searchCache[q]) { combineAndRenderResults(loc, searchCache[q], q); return; } fetch('https://api.github.com/search/code?q=' + encodeURIComponent(q) + '+in:file+repo:' + repoOwner + '/' + repoName + '+path:' + NOTES_DIR + '&per_page=100', { headers: authHeaders() }).then(res => res.json()).then(data => { var rr = (data.items || []).map(i => ({ path: i.path, type: 'blob', sha: i.sha })); searchCache[q] = rr; combineAndRenderResults(loc, rr, q); }); }
 function combineAndRenderResults(l, r, q) { var s = new Set(), c = []; l.concat(r).forEach(i => { if (!s.has(i.path)) { c.push(i); s.add(i.path); } }); showStatus('Found ' + c.length + ' results.', true); renderNotesList(c, true); }
+
+// --- QUICK SWITCHER ---
+function toggleQuickSwitcher(show) {
+  var modal = document.getElementById('quickSwitcherModal'), input = document.getElementById('quickSwitcherInput');
+  if (show === undefined) show = modal.classList.contains('hidden');
+  if (show) {
+    modal.classList.remove('hidden');
+    input.value = '';
+    input.focus();
+    renderQuickSwitcherResults('');
+  } else {
+    modal.classList.add('hidden');
+  }
+}
+
+function renderQuickSwitcherResults(q) {
+  var list = document.getElementById('quickSwitcherResults'), results = [];
+  if (!q) {
+    results = fullNotesTree.filter(e => e.type === 'blob').slice(0, 10);
+  } else {
+    results = fullNotesTree.filter(e => e.type === 'blob' && e.path.toLowerCase().includes(q.toLowerCase())).slice(0, 10);
+  }
+  list.innerHTML = results.map((r, i) => `<li data-path="${r.path}" class="${i === 0 ? 'selected' : ''}">${r.path.replace(NOTES_DIR + '/', '')}</li>`).join('');
+  list.querySelectorAll('li').forEach(li => li.onclick = function() { openNote(this.getAttribute('data-path')); toggleQuickSwitcher(false); });
+}
+
+function searchQuickSwitcher(e) {
+  var list = document.getElementById('quickSwitcherResults'), items = list.querySelectorAll('li'), selected = list.querySelector('.selected'), idx = Array.from(items).indexOf(selected);
+  if (e.key === 'ArrowDown') {
+    e.preventDefault(); if (selected) selected.classList.remove('selected');
+    var next = items[(idx + 1) % items.length]; if (next) next.classList.add('selected');
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault(); if (selected) selected.classList.remove('selected');
+    var prev = items[(idx - 1 + items.length) % items.length]; if (prev) prev.classList.add('selected');
+  } else if (e.key === 'Enter') {
+    e.preventDefault(); if (selected) { openNote(selected.getAttribute('data-path')); toggleQuickSwitcher(false); }
+  } else if (e.key === 'Escape') {
+    toggleQuickSwitcher(false);
+  } else {
+    renderQuickSwitcherResults(e.target.value);
+  }
+}
+
+// --- AUTO-COMPLETE ---
+function handleAutoComplete(e) {
+  var textarea = e.target, val = textarea.value, pos = textarea.selectionStart;
+  var before = val.substring(0, pos), lastBracket = before.lastIndexOf('[[');
+  if (lastBracket !== -1 && !before.substring(lastBracket).includes(']]')) {
+    var q = before.substring(lastBracket + 2);
+    renderAutoCompleteResults(q, lastBracket);
+  } else {
+    document.getElementById('autoCompleteDropdown').classList.add('hidden');
+  }
+}
+
+function renderAutoCompleteResults(q, startIdx) {
+  var dropdown = document.getElementById('autoCompleteDropdown'), list = document.getElementById('autoCompleteList');
+  var results = fullNotesTree.filter(e => e.type === 'blob' && e.path.toLowerCase().includes(q.toLowerCase())).slice(0, 5);
+  if (results.length === 0) { dropdown.classList.add('hidden'); return; }
+  dropdown.classList.remove('hidden');
+  list.innerHTML = results.map((r, i) => `<li data-path="${r.path}" class="${i === 0 ? 'selected' : ''}">${r.path.replace(NOTES_DIR + '/', '').replace('.md','')}</li>`).join('');
+  list.querySelectorAll('li').forEach(li => li.onclick = function() {
+    var textarea = document.getElementById('noteText'), val = textarea.value, pos = textarea.selectionStart;
+    var name = this.innerText;
+    var before = val.substring(0, startIdx) + '[[' + name + ']]';
+    var after = val.substring(pos);
+    textarea.value = before + after;
+    textarea.selectionStart = textarea.selectionEnd = before.length;
+    textarea.focus();
+    dropdown.classList.add('hidden');
+    isDirty = true; triggerAutosave(); if (previewOn) togglePreview(true);
+  });
+}
+
 function toggleWhiteboard(on) { isWhiteboardActive = on; var ids = ['previewArea', 'whiteboardArea', 'insertDropdown', 'editorToolbar', 'noteText', 'whiteboardToolbar']; ids.forEach(id => { var el = document.getElementById(id); if (el) { if (on) (id === 'whiteboardArea' || id === 'whiteboardToolbar' ? el.classList.remove('hidden') : el.classList.add('hidden')); else (id === 'whiteboardArea' || id === 'whiteboardToolbar' ? el.classList.add('hidden') : el.classList.remove('hidden')); } }); if (!on) togglePreview(previewOn); }
 function newWhiteboard() { var f = 'board-' + Date.now() + '.svg'; document.getElementById('pathInput').value = currentFolder ? currentFolder + '/' + f : f; openFilePath = null; openFileSha = null; toggleWhiteboard(true); mainWhiteboardSvg.innerHTML = ''; isDirty = false; }
 function refreshNotesList() { if (!getToken()) return; fetchDefaultBranch().then(() => fetch(apiUrl('git/trees/' + defaultBranch + '?recursive=1'), { headers: authHeaders() })).then(res => res.json()).then(data => { fullNotesTree = (data.tree || []).filter(e => e.path.startsWith(NOTES_DIR + '/')); renderNotesList(fullNotesTree); }); }
 function renderNotesList(tree, isSearch = false) { var pre = NOTES_DIR + (currentFolder ? '/' + currentFolder : '') + '/', html = ''; if (!isSearch && currentFolder) html += '<li class="folder" data-path="" data-type="dir">..</li>'; tree.forEach(e => { if (isSearch || (e.path.startsWith(pre) && !e.path.slice(pre.length).includes('/'))) { var n = e.path.slice(isSearch ? NOTES_DIR.length + 1 : pre.length); html += '<li class="' + (e.type === 'tree' ? 'folder' : 'file') + '" data-path="' + e.path.slice(NOTES_DIR.length + 1) + '" data-type="' + e.type + '">' + n + '</li>'; } }); document.getElementById('notesList').innerHTML = html || '<li>No notes</li>'; document.querySelectorAll('#notesList li').forEach(li => li.onclick = function() { var p = this.getAttribute('data-path'), t = this.getAttribute('data-type'); if (t === 'tree' || t === 'dir') { currentFolder = p === '' ? currentFolder.split('/').slice(0,-1).join('/') : p; renderNotesList(fullNotesTree); } else openNote(NOTES_DIR + '/' + p); }); }
-function openNote(p) { openFilePath = p; var pi = document.getElementById('pathInput'); if (pi) pi.value = p.replace(NOTES_DIR + '/', ''); fetch(apiUrl('contents/' + p), { headers: authHeaders() }).then(res => res.json()).then(d => { var txt = decodeBase64Utf8(d.content); openFileSha = d.sha; if (p.endsWith('.svg')) { toggleWhiteboard(true); var t = document.createElement('div'); t.innerHTML = txt; mainWhiteboardSvg.innerHTML = t.querySelector('svg').innerHTML; } else { document.getElementById('noteText').value = txt; toggleWhiteboard(false); togglePreview(false); } isDirty = false; }).catch(()=>{}); }
-function saveNote(isA = false) { var pi = document.getElementById('pathInput'), pr = pi.value.trim() || defaultFilename(); if (!isWhiteboardActive && !pr.includes('.')) pr += '.md'; var fp = NOTES_DIR + '/' + pr, c = isWhiteboardActive ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">' + mainWhiteboardSvg.innerHTML + '</svg>' : document.getElementById('noteText').value; var body = { message: (isA ? 'Autosave: ' : 'Save: ') + pr, content: base64Utf8(c), sha: openFileSha }; fetch(apiUrl('contents/' + fp), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(body) }).then(res => res.json()).then(d => { if (d.content) { openFileSha = d.content.sha; openFilePath = fp; if (!isA) { showStatus('Saved.', true); refreshNotesList(); } } }); }
+function openNote(p) { 
+  openFilePath = p; 
+  var pi = document.getElementById('pathInput'); 
+  if (pi) pi.value = p.replace(NOTES_DIR + '/', ''); 
+  fetch(apiUrl('contents/' + p), { headers: authHeaders() }).then(res => res.json()).then(d => { 
+    var txt = decodeBase64Utf8(d.content); 
+    openFileSha = d.sha; 
+    if (p.endsWith('.svg')) { 
+      toggleWhiteboard(true); 
+      var t = document.createElement('div'); 
+      t.innerHTML = txt; 
+      mainWhiteboardSvg.innerHTML = t.querySelector('svg').innerHTML; 
+    } else { 
+      document.getElementById('noteText').value = txt; 
+      toggleWhiteboard(false); 
+      togglePreview(false); 
+    } 
+    isDirty = false; 
+    updateBacklinks(p);
+    updateRecentNotes(p);
+  }).catch(()=>{}); 
+}
+
+function updateBacklinks(p) {
+  var name = p.replace(NOTES_DIR + '/', '').replace('.md', '').replace('.txt', '');
+  var idx = getVaultIndex(), backlinks = [], list = document.getElementById('backlinksList'), pane = document.getElementById('backlinksPane');
+  for (var path in idx) { if (path !== p && (idx[path].links || []).includes(name)) backlinks.push(path); }
+  if (backlinks.length === 0) { pane.classList.add('hidden'); return; }
+  pane.classList.remove('hidden');
+  list.innerHTML = backlinks.map(path => `<li onclick="openNote('${path}')">${path.replace(NOTES_DIR + '/', '')}</li>`).join('');
+}
+
+function updateTagsSidebar() {
+  var idx = getVaultIndex(), allTags = new Set();
+  for (var path in idx) { (idx[path].tags || []).forEach(t => allTags.add(t)); }
+  var list = document.getElementById('tagsList');
+  list.innerHTML = Array.from(allTags).map(t => `<span class="tag" onclick="searchByTag('${t}')">${t}</span>`).join(' ');
+}
+
+function searchByTag(tag) {
+  var input = document.getElementById('searchInput');
+  if (input) { input.value = tag; input.dispatchEvent(new Event('input')); }
+}
+
+function reindexVault() {
+  showStatus('Re-indexing vault (this may take a moment)...', true);
+  var mdFiles = fullNotesTree.filter(e => e.type === 'blob' && (e.path.endsWith('.md') || e.path.endsWith('.txt')));
+  var count = 0;
+  Promise.all(mdFiles.map(file => 
+    fetch(apiUrl('contents/' + file.path), { headers: authHeaders() })
+      .then(res => res.json()).then(d => {
+        var txt = decodeBase64Utf8(d.content);
+        indexNote(file.path, txt);
+        count++;
+      }).catch(()=>{})
+  )).then(() => {
+    showStatus('Indexed ' + count + ' notes.', true);
+    updateTagsSidebar();
+  });
+}
+
+function saveNote(isA = false) { var pi = document.getElementById('pathInput'), pr = pi.value.trim() || defaultFilename(); if (!isWhiteboardActive && !pr.includes('.')) pr += '.md'; var fp = NOTES_DIR + '/' + pr, c = isWhiteboardActive ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">' + mainWhiteboardSvg.innerHTML + '</svg>' : document.getElementById('noteText').value; var body = { message: (isA ? 'Autosave: ' : 'Save: ') + pr, content: base64Utf8(c), sha: openFileSha }; fetch(apiUrl('contents/' + fp), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(body) }).then(res => res.json()).then(d => { if (d.content) { openFileSha = d.content.sha; openFilePath = fp; indexNote(fp, c); if (!isA) { showStatus('Saved.', true); refreshNotesList(); } } }); }
 function deleteNote() { if (!confirm('Delete?')) return; fetch(apiUrl('contents/' + openFilePath), { method: 'DELETE', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ message: 'Delete', sha: openFileSha }) }).then(() => { newNote(); refreshNotesList(); }); }
 function downloadNote() { var c = isWhiteboardActive ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">' + mainWhiteboardSvg.innerHTML + '</svg>' : document.getElementById('noteText').value; var b = new Blob([c], { type: 'text/plain' }), u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = document.getElementById('pathInput').value || 'note.md'; a.click(); URL.revokeObjectURL(u); }
 function newFolder() { var n = prompt('Folder:'); if (!n) return; fetch(apiUrl('contents/' + NOTES_DIR + '/' + n + '/.gitkeep'), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ message: 'New folder', content: btoa('') }) }).then(() => refreshNotesList()); }
 function newNote() { var pi = document.getElementById('pathInput'); if (pi) pi.value = currentFolder ? currentFolder + '/' + defaultFilename() : defaultFilename(); var nt = document.getElementById('noteText'); if (nt) nt.value = ''; openFilePath = null; openFileSha = null; toggleWhiteboard(false); togglePreview(false); isDirty = false; }
+
+function openDailyNote() {
+  var now = new Date();
+  var fileName = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0') + '.md';
+  var path = NOTES_DIR + '/' + fileName;
+  
+  // Check if it already exists in our tree
+  var existing = fullNotesTree.find(e => e.path === path);
+  if (existing) {
+    openNote(path);
+  } else {
+    // Doesn't exist, create it locally first and set up for save
+    document.getElementById('pathInput').value = fileName;
+    document.getElementById('noteText').value = '# Daily Note: ' + now.toLocaleDateString() + '\n\n';
+    openFilePath = null;
+    openFileSha = null;
+    isDirty = true;
+    toggleWhiteboard(false);
+    togglePreview(false);
+    saveNote(); // Save immediately to create the file
+  }
+}
 
 // --- TOOLBAR & TEMPLATES ---
 
@@ -332,12 +549,49 @@ function updateToolSelection() {
 
 document.addEventListener('DOMContentLoaded', function() {
   var noteTextarea = document.getElementById('noteText'), whiteboardSvg = document.getElementById('mainWhiteboardSvg'), previewArea = document.getElementById('previewArea');
-  if (noteTextarea) noteTextarea.addEventListener('input', () => { isDirty = true; triggerAutosave(); if (previewOn) togglePreview(true); });
+  if (noteTextarea) {
+    noteTextarea.addEventListener('input', (e) => { 
+      isDirty = true; triggerAutosave(); 
+      if (previewOn) togglePreview(true);
+      handleAutoComplete(e);
+      updateTagsSidebar();
+    });
+    noteTextarea.addEventListener('keydown', (e) => {
+      var dropdown = document.getElementById('autoCompleteDropdown');
+      if (!dropdown.classList.contains('hidden')) {
+        var list = document.getElementById('autoCompleteList'), selected = list.querySelector('.selected'), items = list.querySelectorAll('li'), idx = Array.from(items).indexOf(selected);
+        if (e.key === 'ArrowDown') { e.preventDefault(); if (selected) selected.classList.remove('selected'); (items[(idx + 1) % items.length]).classList.add('selected'); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); if (selected) selected.classList.remove('selected'); (items[(idx - 1 + items.length) % items.length]).classList.add('selected'); }
+        else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); if (selected) selected.click(); }
+        else if (e.key === 'Escape') { dropdown.classList.add('hidden'); }
+      }
+    });
+  }
   if (previewArea) previewArea.addEventListener('input', () => { if (fullPreview) syncPreviewToText(); });
   if (whiteboardSvg) { var obs = new MutationObserver(() => { isDirty = true; triggerAutosave(); }); obs.observe(whiteboardSvg, { childList: true, subtree: true, attributes: true }); }
   mainWhiteboardSvg = document.getElementById('mainWhiteboardSvg'); modalSvgBoard = document.getElementById('nativeSvgBoard');
   setupSvgDrawing(mainWhiteboardSvg); setupSvgDrawing(modalSvgBoard);
-  var sIn = document.getElementById('searchInput'); if (sIn) sIn.addEventListener('input', function () { var q = this.value.trim(); if (q === '') { renderNotesList(fullNotesTree); showStatus('', true); } else { renderNotesList(fullNotesTree.filter(e => e.path.toLowerCase().includes(q.toLowerCase())), true); showStatus('Searching locally...', true); debouncedSearch(q); } });
+  var sIn = document.getElementById('searchInput'); 
+  if (sIn) sIn.addEventListener('input', function () { 
+    var q = this.value.trim().toLowerCase(); 
+    if (q === '') { 
+      renderNotesList(fullNotesTree); showStatus('', true); 
+    } else { 
+      var fileMatches = fullNotesTree.filter(e => e.path.toLowerCase().includes(q));
+      var idx = getVaultIndex(), indexedMatches = [];
+      for (var path in idx) {
+        if ((idx[path].tags || []).some(t => t.toLowerCase().includes(q)) || 
+            (idx[path].links || []).some(l => l.toLowerCase().includes(q))) {
+          var entry = fullNotesTree.find(e => e.path === path);
+          if (entry && !fileMatches.includes(entry)) indexedMatches.push(entry);
+        }
+      }
+      var combined = fileMatches.concat(indexedMatches);
+      renderNotesList(combined, true); 
+      showStatus('Searching local index...', true); 
+      if (q.length > 2 && !q.startsWith('#') && !q.startsWith('[[')) debouncedSearch(q); 
+    } 
+  });
   var rOwner = document.getElementById('repoOwnerInput'); if (rOwner) rOwner.value = repoOwner;
   var rName = document.getElementById('repoNameInput'); if (rName) rName.value = repoName;
   updateRepoDisplay();
@@ -349,6 +603,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var nFold = document.getElementById('fileDropdownNewFolderBtn'); if (nFold) nFold.addEventListener('click', newFolder);
   var nNote = document.getElementById('fileDropdownNewNoteBtn'); if (nNote) nNote.addEventListener('click', newNote);
   var nWhit = document.getElementById('fileDropdownNewWhiteboardBtn'); if (nWhit) nWhit.addEventListener('click', newWhiteboard);
+  var dNoteBtn = document.getElementById('dailyNoteBtn'); if (dNoteBtn) dNoteBtn.addEventListener('click', openDailyNote);
   var dLoad = document.getElementById('fileDropdownDownloadBtn'); if (dLoad) dLoad.addEventListener('click', downloadNote);
   var aDiag = document.getElementById('addDiagramBtn'); if (aDiag) aDiag.addEventListener('click', () => addMermaidTemplate('flow'));
   var iLink = document.getElementById('imageDropdownAddImageLinkBtn'); if (iLink) iLink.addEventListener('click', addImageLink);
@@ -371,6 +626,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var pTog = document.getElementById('previewToggle'); if (pTog) pTog.addEventListener('click', () => togglePreview());
   var pWhit = document.getElementById('placeWhiteboardBtn'); if (pWhit) pWhit.addEventListener('click', () => showWhiteboardModal(false));
   var pDraw = document.getElementById('placeDrawingAsStickyBtn'); if (pDraw) pDraw.addEventListener('click', placeCurrentDrawingAsSticky);
+  var rIdxBtn = document.getElementById('reindexBtn'); if (rIdxBtn) rIdxBtn.addEventListener('click', reindexVault);
   var mToggle = document.getElementById('menuToggleBtn'); if (mToggle) mToggle.addEventListener('click', (e) => { document.body.classList.toggle('sidebar-open'); e.stopPropagation(); });
   var cSide = document.getElementById('closeSidebarBtn'); if (cSide) cSide.addEventListener('click', () => document.body.classList.remove('sidebar-open'));
   var cont = document.getElementById('content'); if (cont) cont.addEventListener('click', () => { if (document.body.classList.contains('sidebar-open')) document.body.classList.remove('sidebar-open'); });
@@ -381,6 +637,13 @@ document.addEventListener('DOMContentLoaded', function() {
   });
   var sInp = document.getElementById('strokeColorInput'); if (sInp) sInp.addEventListener('input', function() { currentStrokeColor = this.value; var m = document.getElementById('modalStrokeColorInput'); if (m) m.value = this.value; });
   var msInp = document.getElementById('modalStrokeColorInput'); if (msInp) msInp.addEventListener('input', function() { currentStrokeColor = this.value; var s = document.getElementById('strokeColorInput'); if (s) s.value = this.value; });
+  
+  document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'p') { e.preventDefault(); toggleQuickSwitcher(); }
+    if (e.key === 'Escape') toggleQuickSwitcher(false);
+  });
+  var qsInp = document.getElementById('quickSwitcherInput'); if (qsInp) qsInp.addEventListener('keyup', searchQuickSwitcher);
+
   document.querySelectorAll('.dropdown-content a').forEach(link => link.addEventListener('click', closeAllDropdowns));
   
   var clearD = document.getElementById('clearDrawBtn'); if (clearD) clearD.addEventListener('click', () => modalSvgBoard.innerHTML = '');
@@ -401,5 +664,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
+  updateRecentNotesUI();
+  updateTagsSidebar();
   updateToolSelection(); refreshNotesList();
 });
