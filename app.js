@@ -412,25 +412,28 @@ function toggleWhiteboard(on) {
   isWhiteboardActive = on; 
   if (on) { currentWhiteboardTool = 'pen'; updateToolSelection(); }
   
-  var ids = ['previewArea', 'whiteboardArea', 'insertDropdown', 'editorToolbar', 'noteText', 'whiteboardToolbar', 'editorContainer']; 
+  var ids = ['previewArea', 'whiteboardArea', 'insertDropdown', 'editorToolbar', 'noteText', 'whiteboardToolbar', 'editorContainer', 'propertiesPane', 'backlinksPane']; 
   ids.forEach(id => { 
     var el = document.getElementById(id); 
     if (el) {
       if (on) {
-        // Show whiteboard things, hide editor things
         if (id === 'whiteboardArea' || id === 'whiteboardToolbar') el.classList.remove('hidden');
         else el.classList.add('hidden');
       } else {
-        // Hide whiteboard things, show editor things
         if (id === 'whiteboardArea' || id === 'whiteboardToolbar') el.classList.add('hidden');
         else {
-          if (id === 'previewArea' && !previewOn) return; // Don't show preview if it wasn't on
+          if (id === 'previewArea' && !previewOn) return;
+          if (id === 'propertiesPane' || id === 'backlinksPane') return;
           el.classList.remove('hidden');
         }
       }
     }
   }); 
-  if (!on) togglePreview(previewOn); 
+  if (!on) {
+    togglePreview(previewOn); 
+    updateProperties();
+    updateBacklinks(openFilePath);
+  }
 }
 
 function setupSvgDrawing(svg) {
@@ -609,13 +612,6 @@ function renderAutoCompleteResults(q, startIdx) {
   });
 }
 
-function toggleWhiteboard(on) { isWhiteboardActive = on; var ids = ['previewArea', 'whiteboardArea', 'insertDropdown', 'editorToolbar', 'noteText', 'whiteboardToolbar']; ids.forEach(id => { var el = document.getElementById(id); if (el) { if (on) (id === 'whiteboardArea' || id === 'whiteboardToolbar' ? el.classList.remove('hidden') : el.classList.add('hidden')); else (id === 'whiteboardArea' || id === 'whiteboardToolbar' ? el.classList.add('hidden') : el.classList.remove('hidden')); } }); if (!on) togglePreview(previewOn); }
-
-function resetCanvasView() {
-  canvasPanX = 0; canvasPanY = 0; canvasZoom = 1;
-  if (mainWhiteboardSvg) mainWhiteboardSvg.setAttribute('viewBox', '0 0 1000 1000');
-}
-
 function newWhiteboard() { 
   var f = 'board-' + Date.now() + '.svg'; 
   document.getElementById('pathInput').value = currentFolder ? currentFolder + '/' + f : f; 
@@ -666,6 +662,7 @@ function openNote(p) {
 }
 
 function updateBacklinks(p) {
+  if (isWhiteboardActive) return;
   var name = p.replace(NOTES_DIR + '/', '').replace('.md', '').replace('.txt', '');
   var idx = getVaultIndex(), backlinks = [], list = document.getElementById('backlinksList'), pane = document.getElementById('backlinksPane');
   for (var path in idx) { if (path !== p && (idx[path].links || []).includes(name)) backlinks.push(path); }
@@ -682,6 +679,7 @@ function updateTagsSidebar() {
 }
 
 function updateOutline() {
+  if (isWhiteboardActive) return;
   var content = document.getElementById('noteText').value;
   var list = document.getElementById('outlineList');
   var headers = [...content.matchAll(/^(#{1,6})\s+(.*)$/gm)];
@@ -697,6 +695,7 @@ function updateOutline() {
 }
 
 function updateProperties() {
+  if (isWhiteboardActive) return;
   var content = document.getElementById('noteText').value;
   var pane = document.getElementById('propertiesPane');
   var list = document.getElementById('propertiesList');
@@ -720,6 +719,11 @@ function updateProperties() {
     }
   });
   list.innerHTML = html || '<div style="color:#888">Empty properties</div>';
+}
+
+function resetCanvasView() {
+  canvasPanX = 0; canvasPanY = 0; canvasZoom = 1;
+  if (mainWhiteboardSvg) mainWhiteboardSvg.setAttribute('viewBox', '0 0 1000 1000');
 }
 
 window.jumpToHeader = function(index) {

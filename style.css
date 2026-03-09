@@ -65,6 +65,19 @@ body { font-family: sans-serif; margin: 0; overflow: hidden; }
 #sidebarTabs button.active { color: #007bff; border-bottom-color: #007bff; font-weight: bold; }
 .sidebar-section { margin-bottom: 12px; border-bottom: 1px solid #eee; padding-bottom: 8px; }
 .sidebar-section h4 { margin: 0 0 5px 0; font-size: 0.8em; text-transform: uppercase; color: #aaa; }
+#recentNotesList, #backlinksList { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 5px; }
+#recentNotesList li, #backlinksList li { 
+  display: inline-block; 
+  background: #eee; 
+  border: 1px solid #ccc; 
+  border-radius: 3px; 
+  padding: 3px 8px; 
+  font-size: 0.85em; 
+  cursor: pointer; 
+  white-space: nowrap;
+}
+#recentNotesList li:hover, #backlinksList li:hover { background: #ddd; border-color: #bbb; }
+
 #notesList { list-style: none; padding: 0; margin: 0; }
 #notesList li { padding: 4px 6px; cursor: pointer; font-size: 0.9em; }
 #notesList li:hover { background: #eee; }
