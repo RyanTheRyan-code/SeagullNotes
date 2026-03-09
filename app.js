@@ -61,12 +61,19 @@ var currentWhiteboardTool = 'pen';
 var currentStrokeColor = '#2c3e50';
 var currentDrawingElement = null; 
 var isDirty = false; 
+var isSaving = false;
 var autosaveTimer = null; 
-var searchCache = {}; 
-var selectedImageUrl = null;
-var mainWhiteboardSvg, modalSvgBoard;
+var startPos = { x: 0, y: 0 };
 
-var activeStickyHtml = null;
+var canvasPanX = 0, canvasPanY = 0, canvasZoom = 1;
+var draggedElement = null, dragOffset = { x: 0, y: 0 };
+
+function updateCanvasTransform(svg) {
+  if (!svg) return;
+  svg.setAttribute('viewBox', `${-canvasPanX} ${-canvasPanY} ${1000/canvasZoom} ${1000/canvasZoom}`);
+}
+
+// --- EDITOR & PREVIEW LOGIC ---
 var turndownService = (typeof TurndownService !== 'undefined') ? new TurndownService({
   headingStyle: 'atx',
   codeBlockStyle: 'fenced'
@@ -83,30 +90,38 @@ if (turndownService) {
             turndownService.addRule('sticky', {
               filter: function (node) { return node.classList && node.classList.contains('sticky-note'); },
               replacement: function (content, node) {
-                // Create a clean version for saving
-                var cleanNode = node.cloneNode(true);
-                cleanNode.removeAttribute('data-initialized');
-                cleanNode.removeAttribute('data-original-html');
-                cleanNode.style.cursor = '';
-                
-                // CRITICAL: Get text from the LIVE node (not the clone) to preserve line breaks
-                var inner = cleanNode.querySelector('.sticky-content');
-                if (inner) {
-                  // For image or draw stickies, preserve their specific inner HTML if they have a wrapper
-                  if (node.classList.contains('sticky-image') || node.classList.contains('sticky-draw')) {
-                    inner.innerHTML = node.querySelector('.sticky-content').innerHTML;
-                  } else {
-                    inner.textContent = node.innerText || node.textContent; 
-                  }
-                }
-                
-                return '\n\n' + cleanNode.outerHTML + '\n\n';
+                var cleanHtml = cleanHtmlForMarkdown(node);
+                return '\n\n' + cleanHtml + '\n\n';
               }
             });    turndownService.addRule('internalLink', {
       filter: function (node) { return node.classList && node.classList.contains('internal-link'); },
       replacement: function (content, node) { return '[[' + content + ']]'; }
     });
+    turndownService.addRule('images', {
+      filter: 'img',
+      replacement: function (content, node) {
+        var src = node.getAttribute('data-canonical-src') || node.getAttribute('src');
+        var alt = node.getAttribute('alt') || '';
+        return '![' + alt + '](' + src + ')';
+      }
+    });
   }
+
+function cleanHtmlForMarkdown(el) {
+  var clone = el.cloneNode(true);
+  clone.querySelectorAll('img').forEach(img => {
+    var canonical = img.getAttribute('data-canonical-src');
+    if (canonical) {
+      img.setAttribute('src', canonical);
+      img.removeAttribute('data-canonical-src');
+    }
+  });
+  // Also remove runtime operational attributes
+  clone.removeAttribute('data-initialized');
+  clone.removeAttribute('data-original-html');
+  clone.style.cursor = '';
+  return clone.outerHTML;
+}
 
 // --- CORE UTILITIES ---
 
@@ -124,7 +139,14 @@ function ensureNotesDir() { return fetch(apiUrl('contents/' + NOTES_DIR), { head
 function fetchDefaultBranch() { return fetch(apiUrl(''), { headers: authHeaders() }).then(res => res.ok ? res.json() : Promise.resolve(null)).then(data => { if (data && data.default_branch) defaultBranch = data.default_branch; }); }
 function showStatus(m, ok) { var el = document.getElementById('status'); if (el) { el.textContent = m; el.style.color = ok ? 'green' : 'red'; } }
 function defaultFilename() { var now = new Date(); return 'note-' + now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0') + '-' + String(now.getHours()).padStart(2, '0') + String(now.getMinutes()).padStart(2, '0') + '.md'; }
-function triggerAutosave() { clearTimeout(autosaveTimer); autosaveTimer = setTimeout(() => { if (isDirty && openFilePath) { saveNote(true); isDirty = false; } }, 3000); }
+function triggerAutosave() { 
+  clearTimeout(autosaveTimer); 
+  autosaveTimer = setTimeout(() => { 
+    if (isDirty && openFilePath && !isSaving) { 
+      saveNote(true); 
+    } 
+  }, 3000); 
+}
 function closeAllDropdowns() { var ds = document.getElementsByClassName("dropdown-content"); for (var i = 0; i < ds.length; i++) ds[i].classList.remove('show'); }
 function debounce(func, delay) { let t; return function(...args) { clearTimeout(t); t = setTimeout(() => func.apply(this, args), delay); }; }
 var debouncedSearch = debounce(searchGithub, 1000);
@@ -185,12 +207,20 @@ function selectionToSticky() {
 
 function parseNoteLinks(content) {
   if (!content) return '';
+  // Handle Obsidian-style image links ![[image.png]]
+  content = content.replace(/!\[\[(.*?)\]\]/g, function(match, name) {
+    var src = name.trim();
+    return '<img src="' + src + '" alt="' + src + '">';
+  });
+  // Handle Obsidian-style internal links [[Note]]
   return content.replace(/\[\[(.*?)\]\]/g, function(match, name) {
     var fileName = name.trim();
     if (!fileName.endsWith('.md') && !fileName.endsWith('.txt')) fileName += '.md';
     return '<a href="#" class="internal-link" onclick="openNote(\'notes/' + fileName + '\'); return false;">' + name.trim() + '</a>';
   });
 }
+
+var debouncedTogglePreview = debounce((on) => togglePreview(on), 500);
 
 function syncPreviewToText() { if (!turndownService || !fullPreview) return; var p = document.getElementById('previewArea'); document.getElementById('noteText').value = turndownService.turndown(p.innerHTML); isDirty = true; triggerAutosave(); initDraggableStickies(); }
 
@@ -210,9 +240,44 @@ function togglePreview(on) {
     }
     preview.classList.remove('hidden');
     var content = textarea.value, path = document.getElementById('pathInput').value || '', isMd = path === '' || path.endsWith('.md'); 
+    
+    // Strip Frontmatter for preview
+    if (isMd) content = content.replace(/^---\n[\s\S]*?\n---\n?/, '');
+
     if (typeof marked !== 'undefined' && isMd) {
       var parsedContent = parseNoteLinks(content || '');
-      preview.innerHTML = (marked.parse || marked)(parsedContent);
+      var html = (marked.parse || marked)(parsedContent);
+      
+      // Prevent immediate loading of relative paths by renaming src to data-src
+      // This regex is more robust to handle various attribute orders and quotes
+      html = html.replace(/<img([^>]+?)src=(["']?)([^"'\s>]+?)\2([^>]*?)>/gi, function(m, p1, q, p2, p3) {
+        if (p2.startsWith('http') || p2.startsWith('data:') || p2.startsWith('blob:')) return m;
+        return '<img' + p1 + 'data-src=' + q + p2 + q + ' src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"' + p3 + '>';
+      });
+      preview.innerHTML = html;
+      
+      // Callout Transformation
+      preview.querySelectorAll('blockquote').forEach(function(bq) {
+        var firstP = bq.querySelector('p');
+        if (firstP) {
+          var match = firstP.innerHTML.trim().match(/^\[!(\w+)\]/);
+          if (match) {
+            var type = match[1].toLowerCase();
+            var div = document.createElement('div');
+            div.className = 'callout callout-' + (['info', 'warning', 'danger', 'success', 'note'].includes(type) ? type : 'info');
+            
+            var title = document.createElement('div');
+            title.className = 'callout-title';
+            title.innerHTML = type;
+            div.appendChild(title);
+            
+            firstP.innerHTML = firstP.innerHTML.replace(/^\[!(\w+)\]/, '').trim();
+            div.innerHTML += bq.innerHTML;
+            bq.parentNode.replaceChild(div, bq);
+          }
+        }
+      });
+
       preview.querySelectorAll('pre code.language-mermaid').forEach(function(codeBlock) {
         var mermaidDiv = document.createElement('div');
         mermaidDiv.classList.add('mermaid');
@@ -223,13 +288,35 @@ function togglePreview(on) {
       });
       if (typeof mermaid !== 'undefined') mermaid.run({ querySelector: '.mermaid' });
       initDraggableStickies();
-      var rawBase = 'https://raw.githubusercontent.com/' + repoOwner + '/' + repoName + '/' + defaultBranch + '/';
+      
       preview.querySelectorAll('img').forEach(function (img) {
-        var src = img.getAttribute('src');
-        if (!src || src.startsWith('http') || src.startsWith('data:')) return;
-        var fullRaw = rawBase + (src.startsWith(NOTES_DIR) ? src : NOTES_DIR + '/' + src);
-        fetch(apiUrl('contents/' + fullRaw.slice(rawBase.length)), { headers: Object.assign({}, authHeaders(), { 'Accept': 'application/vnd.github.raw' }) })
-          .then(res => res.blob()).then(blob => { img.src = URL.createObjectURL(blob); }).catch(()=>{});
+        var src = img.getAttribute('data-src') || img.getAttribute('src');
+        if (!src) return;
+        
+        // Backward compatibility: Convert full GitHub URLs to relative paths
+        var rawPattern = new RegExp('https://raw\\.githubusercontent\\.com/' + repoOwner + '/' + repoName + '/[^/]+/(.*)');
+        var match = src.match(rawPattern);
+        if (match) {
+          src = match[1];
+          if (src.startsWith(NOTES_DIR + '/')) src = src.slice(NOTES_DIR.length + 1);
+        }
+
+        if (src.startsWith('http') || src.startsWith('data:') || src.startsWith('blob:')) return;
+        
+        // Strip query tokens (e.g. ?token=...)
+        var cleanPath = src.split('?')[0];
+        
+        // Canonical relative path (e.g. images/pic.png)
+        img.setAttribute('data-canonical-src', cleanPath);
+        var fullPath = cleanPath.startsWith(NOTES_DIR) ? cleanPath : NOTES_DIR + '/' + cleanPath;
+
+        fetch(apiUrl('contents/' + fullPath), { headers: Object.assign({}, authHeaders(), { 'Accept': 'application/vnd.github.raw' }) })
+          .then(res => res.blob())
+          .then(blob => { 
+            var reader = new FileReader();
+            reader.onloadend = function() { img.src = reader.result; };
+            reader.readAsDataURL(blob);
+          }).catch(()=>{});
       });
     } else { preview.textContent = content || ''; }
     if (fullPreview) { preview.style.minHeight = "100%"; preview.focus(); }
@@ -256,7 +343,23 @@ function initDraggableStickies() {
   var p = document.getElementById('previewArea'), ss = p.querySelectorAll('.sticky-note'), tx = document.getElementById('noteText');
   if (!window.stickyEventsInitialized) {
     document.addEventListener('mousemove', e => { if (!window.currentDraggedSticky) return; var dx = e.clientX - window.dragStartX, dy = e.clientY - window.dragStartY; if (Math.abs(dx) > 3 || Math.abs(dy) > 3) { var nl = window.dragInitialLeft + dx, nt = window.dragInitialTop + dy; window.currentDraggedSticky.style.left = nl + 'px'; window.currentDraggedSticky.style.top = nt + 'px'; window.currentDraggedSticky.setAttribute('data-x', nl); window.currentDraggedSticky.setAttribute('data-y', nt); e.preventDefault(); } });
-    document.addEventListener('mouseup', () => { if (window.currentDraggedSticky) { var s = window.currentDraggedSticky; window.currentDraggedSticky = null; s.style.cursor = 'grab'; if (fullPreview) syncPreviewToText(); else { var oh = s.getAttribute('data-original-html'), nh = s.outerHTML; if (oh && tx.value.includes(oh)) { tx.value = tx.value.replace(oh, nh); s.setAttribute('data-original-html', nh); isDirty = true; triggerAutosave(); } } } });
+    document.addEventListener('mouseup', () => { 
+      if (window.currentDraggedSticky) { 
+        var s = window.currentDraggedSticky; 
+        window.currentDraggedSticky = null; 
+        s.style.cursor = 'grab'; 
+        if (fullPreview) syncPreviewToText(); 
+        else { 
+          var oh = s.getAttribute('data-original-html');
+          var nh = cleanHtmlForMarkdown(s); 
+          if (oh && tx.value.includes(oh)) { 
+            tx.value = tx.value.replace(oh, nh); 
+            s.setAttribute('data-original-html', nh); 
+            isDirty = true; triggerAutosave(); 
+          } 
+        } 
+      } 
+    });
     window.stickyEventsInitialized = true;
   }
   ss.forEach(s => {
@@ -271,7 +374,8 @@ function initDraggableStickies() {
     }
     
     s.addEventListener('mousedown', e => { 
-      if (e.target.tagName.toLowerCase() === 'button' || e.target.classList.contains('sticky-content')) return; 
+      if (e.target.tagName.toLowerCase() === 'button') return; 
+      if (e.target.classList.contains('sticky-content') && !s.classList.contains('sticky-image') && !s.classList.contains('sticky-draw')) return;
       window.currentDraggedSticky = s; window.dragStartX = e.clientX; window.dragStartY = e.clientY; 
       window.dragInitialLeft = parseInt(s.style.left || s.getAttribute('data-x') || 0, 10); 
       window.dragInitialTop = parseInt(s.style.top || s.getAttribute('data-y') || 0, 10); 
@@ -296,25 +400,126 @@ function initDraggableStickies() {
 
 // --- WHITEBOARD & SVG LOGIC ---
 
-function getMousePos(svg, e) { var c = svg.getScreenCTM(); return c ? { x: (e.clientX - c.e) / c.a, y: (e.clientY - c.f) / c.d } : { x: 0, y: 0 }; }
+function getMousePos(svg, e) {
+  var pt = svg.createSVGPoint();
+  pt.x = e.clientX;
+  pt.y = e.clientY;
+  var ctm = svg.getScreenCTM();
+  return pt.matrixTransform(ctm.inverse());
+}
+
+function toggleWhiteboard(on) { 
+  isWhiteboardActive = on; 
+  if (on) { currentWhiteboardTool = 'pen'; updateToolSelection(); }
+  
+  var ids = ['previewArea', 'whiteboardArea', 'insertDropdown', 'editorToolbar', 'noteText', 'whiteboardToolbar', 'editorContainer']; 
+  ids.forEach(id => { 
+    var el = document.getElementById(id); 
+    if (el) {
+      if (on) {
+        // Show whiteboard things, hide editor things
+        if (id === 'whiteboardArea' || id === 'whiteboardToolbar') el.classList.remove('hidden');
+        else el.classList.add('hidden');
+      } else {
+        // Hide whiteboard things, show editor things
+        if (id === 'whiteboardArea' || id === 'whiteboardToolbar') el.classList.add('hidden');
+        else {
+          if (id === 'previewArea' && !previewOn) return; // Don't show preview if it wasn't on
+          el.classList.remove('hidden');
+        }
+      }
+    }
+  }); 
+  if (!on) togglePreview(previewOn); 
+}
 
 function setupSvgDrawing(svg) {
-  if (!svg) return; var isDr = false;
+  if (!svg) return; 
+  var isDr = false, isPanning = false, panStart = { x: 0, y: 0 };
+  
   svg.addEventListener('pointerdown', e => {
-    if (e.button !== 0) return; if (currentWhiteboardTool === 'eraser') { isDr = true; erase(svg, e); svg.setPointerCapture(e.pointerId); return; }
-    e.preventDefault(); isDr = true; var start = getMousePos(svg, e); startPos = start; currentDrawingElement = null; 
-    var stroke = { 'pen': { tag: 'path', attr: { fill: 'none', 'stroke-width': '6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', d: 'M ' + start.x + ' ' + start.y } }, 'rectangle': { tag: 'rect', attr: { fill: 'none', 'stroke-width': '4', x: start.x, y: start.y } }, 'circle': { tag: 'circle', attr: { fill: 'none', 'stroke-width': '4', cx: start.x, cy: start.y } } }[currentWhiteboardTool];
+    if (e.button === 1 || (e.button === 0 && e.altKey)) { // Middle click or Alt+Drag to pan
+      isPanning = true;
+      panStart = { x: e.clientX, y: e.clientY };
+      svg.setPointerCapture(e.pointerId);
+      return;
+    }
+    if (e.button !== 0) return;
+
+    var p = getMousePos(svg, e);
+    
+    if (currentWhiteboardTool === 'eraser') { isDr = true; erase(svg, e); svg.setPointerCapture(e.pointerId); return; }
+    if (currentWhiteboardTool === 'select') {
+      var target = e.target;
+      while (target && target !== svg && !['path', 'rect', 'circle', 'foreignObject'].includes(target.tagName.toLowerCase())) {
+        target = target.parentElement;
+      }
+      if (target && target !== svg) {
+        draggedElement = target;
+        var ex = parseFloat(target.getAttribute('x') || 0);
+        var ey = parseFloat(target.getAttribute('y') || 0);
+        if (target.tagName.toLowerCase() === 'path') {
+          dragOffset = { x: p.x, y: p.y };
+        } else {
+          dragOffset = { x: p.x - ex, y: p.y - ey };
+        }
+        svg.setPointerCapture(e.pointerId);
+      }
+      return;
+    }
+
+    e.preventDefault(); isDr = true; startPos = p; currentDrawingElement = null; 
+    var stroke = { 'pen': { tag: 'path', attr: { fill: 'none', 'stroke-width': '6', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', d: 'M ' + p.x + ' ' + p.y } }, 'rectangle': { tag: 'rect', attr: { fill: 'none', 'stroke-width': '4', x: p.x, y: p.y } }, 'circle': { tag: 'circle', attr: { fill: 'none', 'stroke-width': '4', cx: p.x, cy: p.y } } }[currentWhiteboardTool];
     if (stroke) { currentDrawingElement = document.createElementNS("http://www.w3.org/2000/svg", stroke.tag); for (var a in stroke.attr) currentDrawingElement.setAttribute(a, stroke.attr[a]); currentDrawingElement.setAttribute('stroke', currentStrokeColor); svg.appendChild(currentDrawingElement); }
     svg.setPointerCapture(e.pointerId); 
   });
+
   svg.addEventListener('pointermove', e => {
-    if (!isDr) return; e.preventDefault(); var p = getMousePos(svg, e); if (currentWhiteboardTool === 'eraser') { erase(svg, e); return; }
+    if (isPanning) {
+      var dx = e.clientX - panStart.x, dy = e.clientY - panStart.y;
+      canvasPanX += dx / canvasZoom;
+      canvasPanY += dy / canvasZoom;
+      panStart = { x: e.clientX, y: e.clientY };
+      updateCanvasTransform(svg);
+      return;
+    }
+    var p = getMousePos(svg, e);
+    if (draggedElement) {
+      if (draggedElement.tagName.toLowerCase() === 'path') {
+        var dx = p.x - dragOffset.x, dy = p.y - dragOffset.y;
+        var d = draggedElement.getAttribute('d');
+        draggedElement.setAttribute('d', d.replace(/(-?\d+\.?\d*)\s+(-?\d+\.?\d*)/g, (m, x, y) => {
+          return (parseFloat(x) + dx) + ' ' + (parseFloat(y) + dy);
+        }));
+        dragOffset = { x: p.x, y: p.y };
+      } else {
+        draggedElement.setAttribute('x', p.x - dragOffset.x);
+        draggedElement.setAttribute('y', p.y - dragOffset.y);
+        if (draggedElement.tagName.toLowerCase() === 'circle') {
+          draggedElement.setAttribute('cx', p.x - dragOffset.x);
+          draggedElement.setAttribute('cy', p.y - dragOffset.y);
+        }
+      }
+      isDirty = true;
+      return;
+    }
+    if (!isDr) return; e.preventDefault(); if (currentWhiteboardTool === 'eraser') { erase(svg, e); return; }
     if (!currentDrawingElement) return;
     if (currentWhiteboardTool === 'pen') currentDrawingElement.setAttribute('d', currentDrawingElement.getAttribute('d') + ' L ' + p.x + ' ' + p.y);
     else if (currentWhiteboardTool === 'rectangle') { var w = p.x - startPos.x, h = p.y - startPos.y; currentDrawingElement.setAttribute('x', w > 0 ? startPos.x : p.x); currentDrawingElement.setAttribute('y', h > 0 ? startPos.y : p.y); currentDrawingElement.setAttribute('width', Math.abs(w)); currentDrawingElement.setAttribute('height', Math.abs(h)); }
     else if (currentWhiteboardTool === 'circle') currentDrawingElement.setAttribute('r', Math.sqrt(Math.pow(p.x - startPos.x, 2) + Math.pow(p.y - startPos.y, 2)));
   });
-  svg.addEventListener('pointerup', (e) => { isDr = false; currentDrawingElement = null; svg.releasePointerCapture(e.pointerId); });
+
+  svg.addEventListener('pointerup', (e) => { isDr = false; isPanning = false; draggedElement = null; currentDrawingElement = null; svg.releasePointerCapture(e.pointerId); });
+  
+  svg.addEventListener('wheel', e => {
+    if (e.ctrlKey) {
+      e.preventDefault();
+      var delta = e.deltaY > 0 ? 0.9 : 1.1;
+      canvasZoom *= delta;
+      updateCanvasTransform(svg);
+    }
+  }, { passive: false });
 }
 
 function erase(svg, e) { var t = document.elementFromPoint(e.clientX, e.clientY); while (t && t !== svg && t !== document.body) { if (['path', 'rect', 'circle'].includes(t.tagName.toLowerCase())) { t.remove(); return; } t = t.parentElement; } }
@@ -405,7 +610,22 @@ function renderAutoCompleteResults(q, startIdx) {
 }
 
 function toggleWhiteboard(on) { isWhiteboardActive = on; var ids = ['previewArea', 'whiteboardArea', 'insertDropdown', 'editorToolbar', 'noteText', 'whiteboardToolbar']; ids.forEach(id => { var el = document.getElementById(id); if (el) { if (on) (id === 'whiteboardArea' || id === 'whiteboardToolbar' ? el.classList.remove('hidden') : el.classList.add('hidden')); else (id === 'whiteboardArea' || id === 'whiteboardToolbar' ? el.classList.add('hidden') : el.classList.remove('hidden')); } }); if (!on) togglePreview(previewOn); }
-function newWhiteboard() { var f = 'board-' + Date.now() + '.svg'; document.getElementById('pathInput').value = currentFolder ? currentFolder + '/' + f : f; openFilePath = null; openFileSha = null; toggleWhiteboard(true); mainWhiteboardSvg.innerHTML = ''; isDirty = false; }
+
+function resetCanvasView() {
+  canvasPanX = 0; canvasPanY = 0; canvasZoom = 1;
+  if (mainWhiteboardSvg) mainWhiteboardSvg.setAttribute('viewBox', '0 0 1000 1000');
+}
+
+function newWhiteboard() { 
+  var f = 'board-' + Date.now() + '.svg'; 
+  document.getElementById('pathInput').value = currentFolder ? currentFolder + '/' + f : f; 
+  openFilePath = null; 
+  openFileSha = null; 
+  toggleWhiteboard(true); 
+  mainWhiteboardSvg.innerHTML = ''; 
+  resetCanvasView();
+  isDirty = false; 
+}
 function refreshNotesList() { if (!getToken()) return; fetchDefaultBranch().then(() => fetch(apiUrl('git/trees/' + defaultBranch + '?recursive=1'), { headers: authHeaders() })).then(res => res.json()).then(data => { fullNotesTree = (data.tree || []).filter(e => e.path.startsWith(NOTES_DIR + '/')); renderNotesList(fullNotesTree); }); }
 function renderNotesList(tree, isSearch = false) { var pre = NOTES_DIR + (currentFolder ? '/' + currentFolder : '') + '/', html = ''; if (!isSearch && currentFolder) html += '<li class="folder" data-path="" data-type="dir">..</li>'; tree.forEach(e => { if (isSearch || (e.path.startsWith(pre) && !e.path.slice(pre.length).includes('/'))) { var n = e.path.slice(isSearch ? NOTES_DIR.length + 1 : pre.length); html += '<li class="' + (e.type === 'tree' ? 'folder' : 'file') + '" data-path="' + e.path.slice(NOTES_DIR.length + 1) + '" data-type="' + e.type + '">' + n + '</li>'; } }); document.getElementById('notesList').innerHTML = html || '<li>No notes</li>'; document.querySelectorAll('#notesList li').forEach(li => li.onclick = function() { var p = this.getAttribute('data-path'), t = this.getAttribute('data-type'); if (t === 'tree' || t === 'dir') { currentFolder = p === '' ? currentFolder.split('/').slice(0,-1).join('/') : p; renderNotesList(fullNotesTree); } else openNote(NOTES_DIR + '/' + p); }); }
 function openNote(p) { 
@@ -419,7 +639,19 @@ function openNote(p) {
       toggleWhiteboard(true); 
       var t = document.createElement('div'); 
       t.innerHTML = txt; 
-      mainWhiteboardSvg.innerHTML = t.querySelector('svg').innerHTML; 
+      var loadedSvg = t.querySelector('svg');
+      if (loadedSvg) {
+        mainWhiteboardSvg.innerHTML = loadedSvg.innerHTML;
+        var vb = loadedSvg.getAttribute('viewBox');
+        if (vb) {
+          mainWhiteboardSvg.setAttribute('viewBox', vb);
+          var parts = vb.split(' ').map(parseFloat);
+          canvasPanX = -parts[0]; canvasPanY = -parts[1];
+          canvasZoom = 1000 / parts[2];
+        } else {
+          resetCanvasView();
+        }
+      }
     } else { 
       document.getElementById('noteText').value = txt; 
       toggleWhiteboard(false); 
@@ -428,6 +660,8 @@ function openNote(p) {
     isDirty = false; 
     updateBacklinks(p);
     updateRecentNotes(p);
+    updateOutline();
+    updateProperties();
   }).catch(()=>{}); 
 }
 
@@ -445,6 +679,247 @@ function updateTagsSidebar() {
   for (var path in idx) { (idx[path].tags || []).forEach(t => allTags.add(t)); }
   var list = document.getElementById('tagsList');
   list.innerHTML = Array.from(allTags).map(t => `<span class="tag" onclick="searchByTag('${t}')">${t}</span>`).join(' ');
+}
+
+function updateOutline() {
+  var content = document.getElementById('noteText').value;
+  var list = document.getElementById('outlineList');
+  var headers = [...content.matchAll(/^(#{1,6})\s+(.*)$/gm)];
+  if (headers.length === 0) {
+    list.innerHTML = '<li style="color:#888; font-size:0.8em; padding:10px;">No headings found</li>';
+    return;
+  }
+  list.innerHTML = headers.map((h, i) => {
+    var level = h[1].length;
+    var text = h[2].trim();
+    return `<li class="outline-item outline-h${level}" onclick="jumpToHeader(${i})">${text}</li>`;
+  }).join('');
+}
+
+function updateProperties() {
+  var content = document.getElementById('noteText').value;
+  var pane = document.getElementById('propertiesPane');
+  var list = document.getElementById('propertiesList');
+  var match = content.match(/^---\n([\s\S]*?)\n---/);
+  
+  if (!match) {
+    pane.classList.add('hidden');
+    return;
+  }
+  
+  pane.classList.remove('hidden');
+  var yaml = match[1];
+  var lines = yaml.split('\n');
+  var html = '';
+  lines.forEach(line => {
+    var parts = line.split(':');
+    if (parts.length >= 2) {
+      var key = parts[0].trim();
+      var value = parts.slice(1).join(':').trim();
+      html += `<div class="property-item"><div class="property-key">${key}</div><div class="property-value">${value}</div></div>`;
+    }
+  });
+  list.innerHTML = html || '<div style="color:#888">Empty properties</div>';
+}
+
+window.jumpToHeader = function(index) {
+  var content = document.getElementById('noteText').value;
+  var headers = [...content.matchAll(/^(#{1,6})\s+(.*)$/gm)];
+  if (headers[index]) {
+    var pos = headers[index].index;
+    var textarea = document.getElementById('noteText');
+    textarea.focus();
+    textarea.setSelectionRange(pos, pos + headers[index][0].length);
+    // Scroll textarea to the position
+    var lineHeight = parseInt(window.getComputedStyle(textarea).lineHeight);
+    var linesBefore = content.substring(0, pos).split('\n').length;
+    textarea.scrollTop = (linesBefore - 1) * lineHeight;
+    
+    // If preview is on, try to scroll it too
+    if (previewOn) {
+      var preview = document.getElementById('previewArea');
+      var escapedText = headers[index][2].trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      var elements = [...preview.querySelectorAll('h1, h2, h3, h4, h5, h6')];
+      var target = elements.find(el => el.innerText.trim() === headers[index][2].trim());
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+};
+
+function switchSidebarTab(tab) {
+  var notesBtn = document.getElementById('notesTabBtn');
+  var outlineBtn = document.getElementById('outlineTabBtn');
+  var notesContent = document.getElementById('sidebarNotesContent');
+  var outlineContent = document.getElementById('sidebarOutlineContent');
+  
+  if (tab === 'notes') {
+    notesBtn.classList.add('active');
+    outlineBtn.classList.remove('active');
+    notesContent.classList.remove('hidden');
+    outlineContent.classList.add('hidden');
+  } else {
+    notesBtn.classList.remove('active');
+    outlineBtn.classList.add('active');
+    notesContent.classList.add('hidden');
+    outlineContent.classList.remove('hidden');
+    updateOutline();
+  }
+}
+
+// --- GRAPH VIEW ---
+var nodes = [], links = [], graphAnimId = null;
+function openGraphView() {
+  var modal = document.getElementById('graphModal');
+  modal.classList.remove('hidden');
+  var canvas = document.getElementById('graphCanvas');
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight - 50;
+  
+  // Build data from vault index
+  var idx = getVaultIndex();
+  nodes = []; links = [];
+  var nodeMap = {};
+  
+  // Add all files as nodes (ONLY Markdown files)
+  fullNotesTree.forEach(f => {
+    if (f.type === 'blob' && f.path.endsWith('.md')) {
+      var name = f.path.replace(NOTES_DIR + '/', '').replace('.md', '');
+      var node = { id: f.path, name: name, x: Math.random() * canvas.width, y: Math.random() * canvas.height, vx: 0, vy: 0 };
+      nodes.push(node);
+      nodeMap[name] = node;
+    }
+  });
+  
+  // Add links from vault index
+  for (var path in idx) {
+    var sourceNode = nodes.find(n => n.id === path);
+    if (sourceNode) {
+      (idx[path].links || []).forEach(linkName => {
+        var targetNode = nodeMap[linkName];
+        if (targetNode) links.push({ source: sourceNode, target: targetNode });
+      });
+    }
+  }
+  
+  startGraphSimulation();
+}
+
+function startGraphSimulation() {
+  var canvas = document.getElementById('graphCanvas'), ctx = canvas.getContext('2d');
+  var draggedNode = null, startDragPos = { x: 0, y: 0 }, hasMoved = false;
+  
+  canvas.onmousedown = function(e) {
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    draggedNode = nodes.find(n => Math.sqrt(Math.pow(n.x - mx, 2) + Math.pow(n.y - my, 2)) < 20);
+    if (draggedNode) {
+      canvas.style.cursor = 'grabbing';
+      startDragPos = { x: mx, y: my };
+      hasMoved = false;
+    }
+  };
+
+  canvas.onmousemove = function(e) {
+    if (!draggedNode) return;
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    
+    // Check if we've moved enough to call it a drag
+    if (Math.abs(mx - startDragPos.x) > 5 || Math.abs(my - startDragPos.y) > 5) {
+      hasMoved = true;
+    }
+    
+    draggedNode.x = mx;
+    draggedNode.y = my;
+    draggedNode.vx = 0; draggedNode.vy = 0;
+  };
+
+  canvas.onmouseup = function(e) {
+    if (draggedNode && !hasMoved) {
+      // It was a click, not a drag
+      openNote(draggedNode.id);
+      closeGraphView();
+    }
+    draggedNode = null;
+    canvas.style.cursor = 'grab';
+  };
+
+  function step() {
+    // Advanced physics
+    nodes.forEach(n1 => {
+      // Attraction to center (gravity)
+      n1.vx += (canvas.width/2 - n1.x) * 0.0003;
+      n1.vy += (canvas.height/2 - n1.y) * 0.0003;
+      
+      nodes.forEach(n2 => {
+        if (n1 === n2) return;
+        var dx = n2.x - n1.x, dy = n2.y - n1.y, dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        
+        // Inverse-Square Repulsion (Force = Charge / Dist^2)
+        // This ensures nodes really push away when they get too close
+        if (dist < 250) {
+          var force = 100 / (dist * dist);
+          n1.vx -= dx * force;
+          n1.vy -= dy * force;
+        }
+      });
+    });
+    
+    links.forEach(l => {
+      var dx = l.target.x - l.source.x, dy = l.target.y - l.source.y, dist = Math.sqrt(dx*dx + dy*dy) || 1;
+      // Spring attraction (hooke's law simplified)
+      // Ideal distance around 100px
+      var strength = 0.005;
+      l.source.vx += dx * strength;
+      l.source.vy += dy * strength;
+      l.target.vx -= dx * strength;
+      l.target.vy -= dy * strength;
+    });
+    
+    nodes.forEach(n => {
+      if (n === draggedNode) return;
+      n.x += n.vx; n.y += n.vy;
+      n.vx *= 0.8; n.vy *= 0.8; // Higher friction for stability
+      
+      // Boundary collision
+      if (n.x < 50) n.vx += 1; if (n.x > canvas.width - 50) n.vx -= 1;
+      if (n.y < 50) n.vy += 1; if (n.y > canvas.height - 50) n.vy -= 1;
+    });
+    
+    // Draw
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Links
+    ctx.strokeStyle = '#eee';
+    ctx.lineWidth = 1;
+    links.forEach(l => {
+      ctx.beginPath(); ctx.moveTo(l.source.x, l.source.y); ctx.lineTo(l.target.x, l.target.y); ctx.stroke();
+    });
+    
+    // Nodes & Labels
+    nodes.forEach(n => {
+      var isCurrent = n.id === openFilePath;
+      ctx.fillStyle = isCurrent ? '#007bff' : '#999';
+      ctx.beginPath(); ctx.arc(n.x, n.y, isCurrent ? 6 : 4, 0, Math.PI*2); ctx.fill();
+      
+      // Label
+      ctx.fillStyle = isCurrent ? '#000' : '#555';
+      ctx.font = (isCurrent ? 'bold ' : '') + '11px sans-serif';
+      // Text halo for readability
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+      ctx.lineWidth = 3;
+      ctx.strokeText(n.name, n.x + 10, n.y + 4);
+      ctx.fillText(n.name, n.x + 10, n.y + 4);
+    });
+    
+    graphAnimId = requestAnimationFrame(step);
+  }
+  step();
+}
+
+function closeGraphView() {
+  document.getElementById('graphModal').classList.add('hidden');
+  cancelAnimationFrame(graphAnimId);
 }
 
 function searchByTag(tag) {
@@ -469,7 +944,84 @@ function reindexVault() {
   });
 }
 
-function saveNote(isA = false) { var pi = document.getElementById('pathInput'), pr = pi.value.trim() || defaultFilename(); if (!isWhiteboardActive && !pr.includes('.')) pr += '.md'; var fp = NOTES_DIR + '/' + pr, c = isWhiteboardActive ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">' + mainWhiteboardSvg.innerHTML + '</svg>' : document.getElementById('noteText').value; var body = { message: (isA ? 'Autosave: ' : 'Save: ') + pr, content: base64Utf8(c), sha: openFileSha }; fetch(apiUrl('contents/' + fp), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify(body) }).then(res => res.json()).then(d => { if (d.content) { openFileSha = d.content.sha; openFilePath = fp; indexNote(fp, c); if (!isA) { showStatus('Saved.', true); refreshNotesList(); } } }); }
+function placeDrawingAsSticky() {
+  // Existing function
+}
+
+function showNoteSelectionForWhiteboard() {
+  var m = document.getElementById('whiteboardModal'), l = document.getElementById('whiteboardList'), h = m.querySelector('h3');
+  h.textContent = 'Select a Note to Add';
+  m.classList.remove('hidden');
+  l.innerHTML = '<li>Loading...</li>';
+  var notes = fullNotesTree.filter(e => e.type === 'blob' && (e.path.endsWith('.md') || e.path.endsWith('.txt')));
+  l.innerHTML = notes.map(f => `<li data-path="${f.path}">${f.path.replace(NOTES_DIR+'/', '')}</li>`).join('');
+  l.querySelectorAll('li').forEach(li => li.onclick = function() {
+    var p = this.getAttribute('data-path');
+    addNoteCardToWhiteboard(p);
+    document.getElementById('whiteboardModal').classList.add('hidden');
+  });
+}
+
+function addNoteCardToWhiteboard(path) {
+  fetch(apiUrl('contents/' + path), { headers: authHeaders() }).then(res => res.json()).then(d => {
+    var txt = decodeBase64Utf8(d.content);
+    var name = path.replace(NOTES_DIR + '/', '');
+    var fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+    fo.setAttribute('x', '100'); fo.setAttribute('y', '100');
+    fo.setAttribute('width', '200'); fo.setAttribute('height', '150');
+    fo.setAttribute('class', 'note-card');
+    
+    var div = document.createElement('div');
+    div.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+    div.style.cssText = 'background:#fff; border:1px solid #ccc; padding:10px; font-family:sans-serif; font-size:10px; height:100%; overflow:hidden; box-shadow:2px 2px 5px rgba(0,0,0,0.1);';
+    div.innerHTML = `<strong>${name}</strong><hr/><div style="white-space:pre-wrap;">${txt.substring(0, 200)}...</div>`;
+    
+    fo.appendChild(div);
+    mainWhiteboardSvg.appendChild(fo);
+    isDirty = true;
+  });
+}
+
+function saveNote(isA = false) { 
+  if (isSaving) return;
+  var pi = document.getElementById('pathInput'), pr = pi.value.trim() || defaultFilename(); 
+  if (!isWhiteboardActive && !pr.includes('.')) pr += '.md'; 
+  var fp = NOTES_DIR + '/' + pr;
+  var vb = mainWhiteboardSvg.getAttribute('viewBox') || '0 0 1000 1000';
+  var c = isWhiteboardActive ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}">${mainWhiteboardSvg.innerHTML}</svg>` : document.getElementById('noteText').value; 
+  var body = { message: (isA ? 'Autosave: ' : 'Save: ') + pr, content: base64Utf8(c), sha: openFileSha }; 
+  
+  isSaving = true;
+  if (isA) showStatus('Autosaving...', true);
+  else showStatus('Saving...', true);
+
+  fetch(apiUrl('contents/' + fp), { 
+    method: 'PUT', 
+    headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), 
+    body: JSON.stringify(body) 
+  })
+  .then(res => {
+    if (res.status === 409) throw new Error('Save conflict. Please refresh or try again.');
+    return res.json();
+  })
+  .then(d => { 
+    isSaving = false;
+    if (d.content) { 
+      openFileSha = d.content.sha; 
+      openFilePath = fp; 
+      isDirty = false;
+      indexNote(fp, c); 
+      if (!isA) { showStatus('Saved.', true); refreshNotesList(); } 
+      else { showStatus('Autosaved.', true); }
+    } else if (d.message) {
+      showStatus('Error: ' + d.message, false);
+    }
+  })
+  .catch(err => {
+    isSaving = false;
+    showStatus(err.message, false);
+  }); 
+}
 function deleteNote() { if (!confirm('Delete?')) return; fetch(apiUrl('contents/' + openFilePath), { method: 'DELETE', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ message: 'Delete', sha: openFileSha }) }).then(() => { newNote(); refreshNotesList(); }); }
 function downloadNote() { var c = isWhiteboardActive ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">' + mainWhiteboardSvg.innerHTML + '</svg>' : document.getElementById('noteText').value; var b = new Blob([c], { type: 'text/plain' }), u = URL.createObjectURL(b), a = document.createElement('a'); a.href = u; a.download = document.getElementById('pathInput').value || 'note.md'; a.click(); URL.revokeObjectURL(u); }
 function newFolder() { var n = prompt('Folder:'); if (!n) return; fetch(apiUrl('contents/' + NOTES_DIR + '/' + n + '/.gitkeep'), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ message: 'New folder', content: btoa('') }) }).then(() => refreshNotesList()); }
@@ -487,7 +1039,7 @@ function openDailyNote() {
   } else {
     // Doesn't exist, create it locally first and set up for save
     document.getElementById('pathInput').value = fileName;
-    document.getElementById('noteText').value = '# Daily Note: ' + now.toLocaleDateString() + '\n\n';
+    document.getElementById('noteText').value = '---\ntags: \n---\n# Daily Note: ' + now.toLocaleDateString() + '\n\n';
     openFilePath = null;
     openFileSha = null;
     isDirty = true;
@@ -502,11 +1054,11 @@ function openDailyNote() {
 function addMermaidTemplate(t) { var tp = { flow: '\n```mermaid\ngraph TD\n    A[Start] --> B{Is it?};\n    B -- Yes --> C[OK];\n    C --> D[End];\n    B -- No --> E[Find out];\n    E --> B;\n```\n', seq: '\n```mermaid\nsequenceDiagram\n    Alice->>John: Hello John, how are you?\n    John-->>Alice: Great!\n```\n', gantt: '\n```mermaid\ngantt\n    title Gantt\n    section S1\n    T1 :a1, 2023-01-01, 30d\n```\n', class: '\n```mermaid\nclassDiagram\n    Animal <|-- Duck\n```\n' }[t] || '\n```mermaid\ngraph TD\n    A --> B;\n```\n'; var tx = document.getElementById('noteText'); tx.value = tx.value.slice(0, tx.selectionStart) + tp + tx.value.slice(tx.selectionEnd); showStatus('Mermaid added.', true); }
 function addSticky() { var tx = document.getElementById('noteText'), h = '\n\n<div class="sticky-note" data-x="100" data-y="100" style="left: 100px; top: 100px;" contenteditable="false"><div class="sticky-content" contenteditable="true">New sticky...</div></div>\n\n'; tx.value = tx.value.slice(0, tx.selectionStart) + h + tx.value.slice(tx.selectionEnd); if (previewOn) togglePreview(true); }
 function addDrawSticky() { var tx = document.getElementById('noteText'), h = '\n\n<div class="sticky-note sticky-draw" data-x="20" data-y="20" style="left: 20px; top: 20px;"><div class="draw-preview">' + EMPTY_SVG + '</div><button class="edit-draw-btn" onclick="window.openDrawScreen(this.parentElement)">✏️ Edit</button></div>\n\n'; tx.value = tx.value.slice(0, tx.selectionStart) + h + tx.value.slice(tx.selectionEnd); if (previewOn) togglePreview(true); }
-function addImageSticky() { uploadImage(u => { var tx = document.getElementById('noteText'), h = '\n\n<div class="sticky-note sticky-image" data-x="20" data-y="20" style="left: 20px; top: 20px;"><img src="' + u + '" alt="Image"></div>\n\n'; tx.value = tx.value.slice(0, tx.selectionStart) + h + tx.value.slice(tx.selectionEnd); if (previewOn) togglePreview(true); }); }
+function addImageSticky() { uploadImage(u => { var tx = document.getElementById('noteText'), h = '\n\n<div class="sticky-note sticky-image" data-x="20" data-y="20" style="left: 20px; top: 20px;"><div class="sticky-content"><img src="' + u + '" alt="Image" style="pointer-events:none; width:100%; display:block;"></div></div>\n\n'; tx.value = tx.value.slice(0, tx.selectionStart) + h + tx.value.slice(tx.selectionEnd); if (previewOn) togglePreview(true); }); }
 function addImageLink() { uploadImage(u => { var tx = document.getElementById('noteText'); tx.value = tx.value.slice(0, tx.selectionStart) + '![](' + u + ')' + tx.value.slice(tx.selectionEnd); if (previewOn) togglePreview(true); }); }
 function addImageFromUrl() { var u = prompt("URL:"); if (u) { var tx = document.getElementById('noteText'); tx.value = tx.value.slice(0, tx.selectionStart) + '![](' + u + ')' + tx.value.slice(tx.selectionEnd); if (previewOn) togglePreview(true); } }
-function uploadImage(cb) { var fi = document.getElementById('imageFileInput'); var cl = () => { var f = fi.files[0]; if (!f) return; var rd = new FileReader(); rd.onload = () => { var b6 = rd.result.replace(/^data:image\/\w+;base64,/, ''); var name = Date.now() + '-' + f.name, p = NOTES_DIR + '/images/' + name; fetch(apiUrl('contents/' + p), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ message: 'Add image', content: b6 }) }).then(res => res.json()).then(data => { cb(data.content.download_url); refreshNotesList(); }); }; rd.readAsDataURL(f); }; fi.addEventListener('change', cl, { once: true }); fi.click(); }
-function showImageLibrary() { var m = document.getElementById('imageLibraryModal'), l = document.getElementById('imageLibraryList'); m.classList.remove('hidden'); l.innerHTML = '<li>Loading...</li>'; fetch(apiUrl('contents/' + NOTES_DIR + '/images'), { headers: authHeaders() }).then(res => res.json()).then(data => { l.innerHTML = ''; if (!data || data.message) return; data.forEach(file => { var img = document.createElement('img'); img.src = file.download_url; img.onclick = () => { l.querySelectorAll('img').forEach(i => i.classList.remove('selected')); img.classList.add('selected'); selectedImageUrl = file.download_url; document.getElementById('imageLibraryActions').classList.remove('hidden'); }; l.appendChild(img); }); }).catch(()=>{}); }
+function uploadImage(cb) { var fi = document.getElementById('imageFileInput'); var cl = () => { var f = fi.files[0]; if (!f) return; var rd = new FileReader(); rd.onload = () => { var b6 = rd.result.replace(/^data:image\/\w+;base64,/, ''); var name = Date.now() + '-' + f.name, p = NOTES_DIR + '/images/' + name; fetch(apiUrl('contents/' + p), { method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()), body: JSON.stringify({ message: 'Add image', content: b6 }) }).then(res => res.json()).then(data => { cb(data.content.path.replace(NOTES_DIR + '/', '')); refreshNotesList(); }); }; rd.readAsDataURL(f); }; fi.addEventListener('change', cl, { once: true }); fi.click(); }
+function showImageLibrary() { var m = document.getElementById('imageLibraryModal'), l = document.getElementById('imageLibraryList'); m.classList.remove('hidden'); l.innerHTML = '<li>Loading...</li>'; fetch(apiUrl('contents/' + NOTES_DIR + '/images'), { headers: authHeaders() }).then(res => res.json()).then(data => { l.innerHTML = ''; if (!data || data.message) return; data.forEach(file => { var img = document.createElement('img'); img.src = file.download_url; img.onclick = () => { l.querySelectorAll('img').forEach(i => i.classList.remove('selected')); img.classList.add('selected'); selectedImageUrl = file.path.replace(NOTES_DIR + '/', ''); document.getElementById('imageLibraryActions').classList.remove('hidden'); }; l.appendChild(img); }); }).catch(()=>{}); }
 function showWhiteboardModal(asS) { isPlacingAsSticky = !!asS; var m = document.getElementById('whiteboardModal'), l = document.getElementById('whiteboardList'); m.classList.remove('hidden'); l.innerHTML = '<li>Loading...</li>'; fetch(apiUrl('git/trees/' + defaultBranch + '?recursive=1'), { headers: authHeaders() }).then(res => res.json()).then(data => { var fs = (data.tree||[]).filter(e => e.path.endsWith('.svg')); l.innerHTML = fs.map(f => '<li data-path="' + f.path + '">' + f.path.replace(NOTES_DIR+'/', '') + '</li>').join(''); l.querySelectorAll('li').forEach(li => li.onclick = function() { var p = this.getAttribute('data-path'); if (isPlacingAsSticky) placeWhiteboardAsSticky(p); else placeWhiteboard(p); }); }); }
 function placeWhiteboardAsSticky(p) { fetch(apiUrl('contents/' + p), { headers: authHeaders() }).then(res => res.json()).then(d => { var svg = decodeBase64Utf8(d.content); var h = '\n\n<div class="sticky-note sticky-draw" data-x="20" data-y="20" style="left: 20px; top: 20px;"><div class="draw-preview">' + svg + '</div><button class="edit-draw-btn" onclick="window.openDrawScreen(this.parentElement)">✏️ Edit</button></div>\n\n'; document.getElementById('noteText').value += h; if (previewOn) togglePreview(true); document.getElementById('whiteboardModal').classList.add('hidden'); }); }
 function placeWhiteboard(p) { fetch(apiUrl('contents/' + p), { headers: authHeaders() }).then(res => res.json()).then(d => { var svg = decodeBase64Utf8(d.content); var u = 'data:image/svg+xml;base64,' + btoa(svg); document.getElementById('noteText').value += '![](' + u + ')'; document.getElementById('whiteboardModal').classList.add('hidden'); }); }
@@ -522,7 +1074,21 @@ window.openDrawScreen = function(stickyEl) {
   tempDiv.innerHTML = svgContent;
   var loadedSvg = tempDiv.querySelector('svg');
   modalSvgBoard.innerHTML = loadedSvg ? loadedSvg.innerHTML : '';
-  activeStickyHtml = stickyEl.outerHTML;
+  
+  // Load viewBox or reset
+  var vb = loadedSvg ? loadedSvg.getAttribute('viewBox') : null;
+  if (vb) {
+    modalSvgBoard.setAttribute('viewBox', vb);
+    var parts = vb.split(' ').map(parseFloat);
+    canvasPanX = -parts[0]; canvasPanY = -parts[1];
+    canvasZoom = 1000 / parts[2];
+  } else {
+    canvasPanX = 0; canvasPanY = 0; canvasZoom = 1;
+    modalSvgBoard.setAttribute('viewBox', '0 0 1000 1000');
+  }
+
+  // Use data-original-html as the reliable search key for the Markdown replace
+  activeStickyHtml = stickyEl.getAttribute('data-original-html') || stickyEl.outerHTML;
   var modalStroke = document.getElementById('modalStrokeColorInput');
   if (modalStroke) modalStroke.value = currentStrokeColor;
   updateToolSelection();
@@ -533,14 +1099,16 @@ function closeDrawScreen() {
   document.getElementById('top').classList.remove('hidden');
   document.getElementById('mainLayout').classList.remove('hidden');
   activeStickyHtml = null;
+  // Reset pan/zoom for main whiteboard just in case
+  resetCanvasView();
 }
 
 function updateToolSelection() {
-  var activeIdMap = { 'pen': 'penToolBtn', 'rectangle': 'rectToolBtn', 'circle': 'circleToolBtn', 'eraser': 'eraserToolBtn' };
+  var activeIdMap = { 'select': 'selectToolBtn', 'pen': 'penToolBtn', 'rectangle': 'rectToolBtn', 'circle': 'circleToolBtn', 'eraser': 'eraserToolBtn' };
   var activeId = activeIdMap[currentWhiteboardTool];
-  var modalIdMap = { 'pen': 'modalPenToolBtn', 'rectangle': 'modalRectToolBtn', 'circle': 'modalCircleToolBtn', 'eraser': 'modalEraserToolBtn' };
+  var modalIdMap = { 'select': 'modalSelectToolBtn', 'pen': 'modalPenToolBtn', 'rectangle': 'modalRectToolBtn', 'circle': 'modalCircleToolBtn', 'eraser': 'modalEraserToolBtn' };
   var activeModalId = modalIdMap[currentWhiteboardTool];
-  ['penToolBtn', 'rectToolBtn', 'circleToolBtn', 'eraserToolBtn', 'modalPenToolBtn', 'modalRectToolBtn', 'modalCircleToolBtn', 'modalEraserToolBtn'].forEach(id => {
+  ['selectToolBtn', 'penToolBtn', 'rectToolBtn', 'circleToolBtn', 'eraserToolBtn', 'modalSelectToolBtn', 'modalPenToolBtn', 'modalRectToolBtn', 'modalCircleToolBtn', 'modalEraserToolBtn'].forEach(id => {
     var el = document.getElementById(id); if (el) { (id === activeId || id === activeModalId) ? el.classList.add('selected-tool') : el.classList.remove('selected-tool'); }
   });
 }
@@ -552,9 +1120,11 @@ document.addEventListener('DOMContentLoaded', function() {
   if (noteTextarea) {
     noteTextarea.addEventListener('input', (e) => { 
       isDirty = true; triggerAutosave(); 
-      if (previewOn) togglePreview(true);
+      if (previewOn) debouncedTogglePreview(true);
       handleAutoComplete(e);
       updateTagsSidebar();
+      updateOutline();
+      updateProperties();
     });
     noteTextarea.addEventListener('keydown', (e) => {
       var dropdown = document.getElementById('autoCompleteDropdown');
@@ -620,17 +1190,31 @@ document.addEventListener('DOMContentLoaded', function() {
   var aWhitS = document.getElementById('addWhiteboardSticky'); if (aWhitS) aWhitS.addEventListener('click', (e) => { e.preventDefault(); showWhiteboardModal(true); });
   var iLib = document.getElementById('imageDropdownAddImageFromLibrary'); if (iLib) iLib.addEventListener('click', (e) => { e.preventDefault(); showImageLibrary(); });
   var cLib = document.getElementById('cancelImageLibraryBtn'); if (cLib) cLib.addEventListener('click', () => document.getElementById('imageLibraryModal').classList.add('hidden'));
+  var cWhitS = document.getElementById('cancelWhiteboardSelectionBtn'); if (cWhitS) cWhitS.addEventListener('click', () => document.getElementById('whiteboardModal').classList.add('hidden'));
   var iAsL = document.getElementById('insertImageAsLinkBtn'); if (iAsL) iAsL.addEventListener('click', () => { if (selectedImageUrl) { insertMarkdown('![](', selectedImageUrl + ')'); document.getElementById('imageLibraryModal').classList.add('hidden'); } });
-  var iAsS = document.getElementById('insertImageAsStickyBtn'); if (iAsS) iAsS.addEventListener('click', () => { if (selectedImageUrl) { var html = '<div class="sticky-note sticky-image" data-x="20" data-y="20" style="left: 20px; top: 20px;"><img src="' + selectedImageUrl + '" alt="Image"></div>'; var tx = document.getElementById('noteText'); tx.value = tx.value.slice(0, tx.selectionStart) + '\n' + html + '\n' + tx.value.slice(tx.selectionEnd); if (previewOn) togglePreview(true); document.getElementById('imageLibraryModal').classList.add('hidden'); } });
+  var iAsS = document.getElementById('insertImageAsStickyBtn'); if (iAsS) iAsS.addEventListener('click', () => { if (selectedImageUrl) { var html = '<div class="sticky-note sticky-image" data-x="20" data-y="20" style="left: 20px; top: 20px;"><div class="sticky-content"><img src="' + selectedImageUrl + '" alt="Image" style="pointer-events:none; width:100%; display:block;"></div></div>'; var tx = document.getElementById('noteText'); tx.value = tx.value.slice(0, tx.selectionStart) + '\n' + html + '\n' + tx.value.slice(tx.selectionEnd); if (previewOn) togglePreview(true); document.getElementById('imageLibraryModal').classList.add('hidden'); } });
   var rList = document.getElementById('fileDropdownRefreshNotesBtn'); if (rList) rList.addEventListener('click', () => { refreshNotesList(); showStatus('List refreshed.', true); });
   var pTog = document.getElementById('previewToggle'); if (pTog) pTog.addEventListener('click', () => togglePreview());
   var pWhit = document.getElementById('placeWhiteboardBtn'); if (pWhit) pWhit.addEventListener('click', () => showWhiteboardModal(false));
+  var rCBtn = document.getElementById('resetCanvasBtn'); if (rCBtn) rCBtn.addEventListener('click', resetCanvasView);
+  var mrCBtn = document.getElementById('modalResetCanvasBtn'); if (mrCBtn) mrCBtn.addEventListener('click', () => {
+    canvasPanX = 0; canvasPanY = 0; canvasZoom = 1;
+    updateCanvasTransform(modalSvgBoard);
+  });
+  var aNoteCard = document.getElementById('addNoteCardBtn'); if (aNoteCard) aNoteCard.addEventListener('click', showNoteSelectionForWhiteboard);
   var pDraw = document.getElementById('placeDrawingAsStickyBtn'); if (pDraw) pDraw.addEventListener('click', placeCurrentDrawingAsSticky);
   var rIdxBtn = document.getElementById('reindexBtn'); if (rIdxBtn) rIdxBtn.addEventListener('click', reindexVault);
+  
+  var nTabBtn = document.getElementById('notesTabBtn'); if (nTabBtn) nTabBtn.addEventListener('click', () => switchSidebarTab('notes'));
+  var oTabBtn = document.getElementById('outlineTabBtn'); if (oTabBtn) oTabBtn.addEventListener('click', () => switchSidebarTab('outline'));
+  
+  var gBtn = document.getElementById('graphViewBtn'); if (gBtn) gBtn.addEventListener('click', openGraphView);
+  var cGBtn = document.getElementById('closeGraphBtn'); if (cGBtn) cGBtn.addEventListener('click', closeGraphView);
+
   var mToggle = document.getElementById('menuToggleBtn'); if (mToggle) mToggle.addEventListener('click', (e) => { document.body.classList.toggle('sidebar-open'); e.stopPropagation(); });
   var cSide = document.getElementById('closeSidebarBtn'); if (cSide) cSide.addEventListener('click', () => document.body.classList.remove('sidebar-open'));
   var cont = document.getElementById('content'); if (cont) cont.addEventListener('click', () => { if (document.body.classList.contains('sidebar-open')) document.body.classList.remove('sidebar-open'); });
-  ['pen', 'rectangle', 'circle', 'eraser'].forEach(t => { 
+  ['select', 'pen', 'rectangle', 'circle', 'eraser'].forEach(t => { 
     var id = t + 'ToolBtn', mid = 'modal' + t.charAt(0).toUpperCase() + t.slice(1) + 'ToolBtn';
     var b = document.getElementById(id); if (b) b.addEventListener('click', () => { currentWhiteboardTool = t; updateToolSelection(); showStatus('Tool: ' + t, true); });
     var mb = document.getElementById(mid); if (mb) mb.addEventListener('click', () => { currentWhiteboardTool = t; updateToolSelection(); });
@@ -651,15 +1235,21 @@ document.addEventListener('DOMContentLoaded', function() {
   var saveD = document.getElementById('saveDrawScreenBtn');
   if (saveD) saveD.addEventListener('click', function() {
     if (activeStickyHtml && modalSvgBoard) {
-      var finalSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="100%" height="100%">' + modalSvgBoard.innerHTML + '</svg>';
+      var vb = modalSvgBoard.getAttribute('viewBox') || '0 0 1000 1000';
+      var finalSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" width="100%" height="100%">` + modalSvgBoard.innerHTML + '</svg>';
       var cropped = cropSvg(finalSvg);
       var temp = document.createElement('div'); temp.innerHTML = activeStickyHtml;
       var stick = temp.firstElementChild;
       var dp = stick ? stick.querySelector('.draw-preview') : null;
       if (dp) dp.innerHTML = cropped;
-      var newH = stick ? stick.outerHTML : '';
+      
+      var newH = cleanHtmlForMarkdown(stick);
       var tx = document.getElementById('noteText');
-      if (tx && newH && tx.value.includes(activeStickyHtml)) { tx.value = tx.value.replace(activeStickyHtml, newH); }
+      if (tx && newH && tx.value.includes(activeStickyHtml)) { 
+        tx.value = tx.value.replace(activeStickyHtml, newH); 
+        isDirty = true;
+        triggerAutosave();
+      }
       closeDrawScreen(); togglePreview(true);
     }
   });

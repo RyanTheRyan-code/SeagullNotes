@@ -31,104 +31,124 @@
     <div id="sidebar">
       <div id="sidebarHeader">
         <h3>Notes</h3>
+        <button type="button" id="graphViewBtn" title="Open Graph View">🕸️</button>
         <button type="button" id="dailyNoteBtn" title="Open or create today's note">📅 Today</button>
         <button type="button" id="closeSidebarBtn">✕</button>
       </div>
-      <input type="search" id="searchInput" placeholder="Search notes..." style="width: 100%; margin-bottom: 8px;">
-      <div id="breadcrumb"></div>
-      <div id="recentNotesSection" class="sidebar-section">
-        <h4>Recent</h4>
-        <ul id="recentNotesList"></ul>
+      <div id="sidebarTabs">
+        <button type="button" id="notesTabBtn" class="active">Notes</button>
+        <button type="button" id="outlineTabBtn">Outline</button>
       </div>
-      <div id="tagsSection" class="sidebar-section">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-          <h4>Tags</h4>
-          <button type="button" id="reindexBtn" title="Re-index all notes to find tags/links" style="font-size: 0.7em; padding: 2px 5px; cursor: pointer;">🔄 Re-index</button>
+      <div id="sidebarNotesContent">
+        <input type="search" id="searchInput" placeholder="Search notes..." style="width: 100%; margin-bottom: 8px;">
+        <div id="breadcrumb"></div>
+        <div id="recentNotesSection" class="sidebar-section hidden">
+          <h4>Recent</h4>
+          <ul id="recentNotesList"></ul>
         </div>
-        <div id="tagsList"></div>
+        <div id="tagsSection" class="sidebar-section">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+            <h4>Tags</h4>
+            <button type="button" id="reindexBtn" title="Re-index all notes to find tags/links" style="font-size: 0.7em; padding: 2px 5px; cursor: pointer;">🔄 Re-index</button>
+          </div>
+          <div id="tagsList"></div>
+        </div>
+        <ul id="notesList"></ul>
       </div>
-      <ul id="notesList"></ul>
+      <div id="sidebarOutlineContent" class="hidden">
+        <div id="outlineList"></div>
+      </div>
     </div>
     <div id="content">
-      <div id="backlinksPane" class="hidden">
-        <h4>Backlinks</h4>
-        <ul id="backlinksList"></ul>
-      </div>
-      <div id="toolbar">
-        <button type="button" id="saveBtn" title="Save current note to GitHub">Save</button>
-        <button type="button" id="deleteBtn" title="Delete current note from GitHub">Delete</button>
-        <button type="button" id="previewToggle" title="Toggle between Editor and Preview modes">Preview</button>
+      <div id="contentHeader">
+        <div id="propertiesPane" class="hidden">
+          <div id="propertiesList"></div>
+        </div>
+        <div id="backlinksPane" class="hidden">
+          <h4>Backlinks</h4>
+          <ul id="backlinksList"></ul>
+        </div>
+        <div id="toolbar">
+          <button type="button" id="saveBtn" title="Save current note to GitHub">Save</button>
+          <button type="button" id="deleteBtn" title="Delete current note from GitHub">Delete</button>
+          <button type="button" id="previewToggle" title="Toggle between Editor and Preview modes">Preview</button>
 
-        <div class="dropdown">
-          <button class="dropbtn" id="fileDropdownBtn">File</button>
-          <div class="dropdown-content" id="fileDropdownContent">
-            <a href="#" id="fileDropdownNewNoteBtn">New Note</a>
-            <a href="#" id="fileDropdownNewFolderBtn">New Folder</a>
-            <a href="#" id="fileDropdownNewWhiteboardBtn">New Whiteboard</a>
-            <a href="#" id="fileDropdownDownloadBtn">Download Note</a>
-            <a href="#" id="fileDropdownRefreshNotesBtn">Refresh List</a>
+          <div class="dropdown">
+            <button class="dropbtn" id="fileDropdownBtn">File</button>
+            <div class="dropdown-content" id="fileDropdownContent">
+              <a href="#" id="fileDropdownNewNoteBtn">New Note</a>
+              <a href="#" id="fileDropdownNewFolderBtn">New Folder</a>
+              <a href="#" id="fileDropdownNewWhiteboardBtn">New Whiteboard</a>
+              <a href="#" id="fileDropdownDownloadBtn">Download Note</a>
+              <a href="#" id="fileDropdownRefreshNotesBtn">Refresh List</a>
+            </div>
           </div>
+
+          <div class="dropdown">
+            <button class="dropbtn" id="imageDropdownBtn">Image</button>
+            <div class="dropdown-content" id="imageDropdownContent">
+              <a href="#" id="imageDropdownAddImageLinkBtn">Upload Image</a>
+              <a href="#" id="imageDropdownAddImageUrlBtn">Image from URL</a>
+              <a href="#" id="imageDropdownAddImageFromLibrary">From Image Library</a>
+            </div>
+          </div>
+
+          <div id="insertDropdown" class="dropdown">
+            <button type="button" id="insertToggleBtn" class="dropbtn">Insert</button>
+            <div id="insertDropdownContent" class="dropdown-content">
+              <a href="#" id="addTextSticky">Text Note (Sticky)</a>
+              <a href="#" id="addDrawingSticky">Drawing (Sticky)</a>
+              <a href="#" id="addImageSticky">Image (Sticky)</a>
+              <a href="#" id="addWhiteboardSticky">Whiteboard (Sticky)</a>
+              <a href="#" onclick="addMermaidTemplate('flow')">Flowchart</a>
+              <a href="#" onclick="addMermaidTemplate('seq')">Sequence Diagram</a>
+              <a href="#" onclick="addMermaidTemplate('gantt')">Gantt Chart</a>
+              <a href="#" onclick="addMermaidTemplate('class')">Class Diagram</a>
+              <a href="#" id="placeWhiteboardBtn">Place Whiteboard</a>
+            </div>
+          </div>
+          <span id="status"></span>
         </div>
 
-        <div class="dropdown">
-          <button class="dropbtn" id="imageDropdownBtn">Image</button>
-          <div class="dropdown-content" id="imageDropdownContent">
-            <a href="#" id="imageDropdownAddImageLinkBtn">Upload Image</a>
-            <a href="#" id="imageDropdownAddImageUrlBtn">Image from URL</a>
-            <a href="#" id="imageDropdownAddImageFromLibrary">From Image Library</a>
-          </div>
+        <div id="editorToolbar">
+          <button type="button" title="Bold" onmousedown="event.preventDefault()" onclick="insertMarkdown('**', '**')"><b>B</b></button>
+          <button type="button" title="Italic" onmousedown="event.preventDefault()" onclick="insertMarkdown('*', '*')"><i>I</i></button>
+          <button type="button" title="Heading 1" onmousedown="event.preventDefault()" onclick="insertMarkdown('# ', '')">H1</button>
+          <button type="button" title="Heading 2" onmousedown="event.preventDefault()" onclick="insertMarkdown('## ', '')">H2</button>
+          <button type="button" title="Quote" onmousedown="event.preventDefault()" onclick="insertMarkdown('> ', '')">"</button>
+          <button type="button" title="Code" onmousedown="event.preventDefault()" onclick="insertMarkdown('```\n', '\n```')">{ }</button>
+          <button type="button" title="Link" onmousedown="event.preventDefault()" onclick="insertMarkdown('[', '](https://)')">🔗</button>
+          <button type="button" title="Unordered List" onmousedown="event.preventDefault()" onclick="insertMarkdown('- ', '')">•</button>
+          <button type="button" title="Ordered List" onmousedown="event.preventDefault()" onclick="insertMarkdown('1. ', '')">1.</button>
+          <button type="button" title="Selection to Sticky" onmousedown="event.preventDefault()" onclick="selectionToSticky()">📌</button>
+          <span class="toolbar-separator">|</span>
+          <button type="button" id="livePreviewToggle" title="Toggle Side-by-Side Preview">👁️ Live</button>
+          <button type="button" id="fullPreviewToggle" title="Toggle Full Screen Preview">✍️ Full View</button>
         </div>
 
-        <div id="insertDropdown" class="dropdown">
-          <button type="button" id="insertToggleBtn" class="dropbtn">Insert</button>
-          <div id="insertDropdownContent" class="dropdown-content">
-            <a href="#" id="addTextSticky">Text Note (Sticky)</a>
-            <a href="#" id="addDrawingSticky">Drawing (Sticky)</a>
-            <a href="#" id="addImageSticky">Image (Sticky)</a>
-            <a href="#" id="addWhiteboardSticky">Whiteboard (Sticky)</a>
-            <a href="#" onclick="addMermaidTemplate('flow')">Flowchart</a>
-            <a href="#" onclick="addMermaidTemplate('seq')">Sequence Diagram</a>
-            <a href="#" onclick="addMermaidTemplate('gantt')">Gantt Chart</a>
-            <a href="#" onclick="addMermaidTemplate('class')">Class Diagram</a>
-            <a href="#" id="placeWhiteboardBtn">Place Whiteboard</a>
-          </div>
+        <div id="whiteboardToolbar" class="hidden">
+          <button type="button" id="selectToolBtn">Select</button>
+          <button type="button" id="penToolBtn">Pen</button>
+          <button type="button" id="rectToolBtn">Rectangle</button>
+          <button type="button" id="circleToolBtn">Circle</button>
+          <button type="button" id="eraserToolBtn">Eraser</button>
+          <input type="color" id="strokeColorInput" value="#2c3e50">
+          <button type="button" id="resetCanvasBtn" title="Reset view to center">🏠 Reset View</button>
+          <button type="button" id="addNoteCardBtn" title="Add a note as a card to this whiteboard">📄 Add Note</button>
+          <button type="button" id="placeDrawingAsStickyBtn">Place as Sticky</button>
         </div>
-        <span id="status"></span>
+        <input type="text" id="pathInput" placeholder="path e.g. work/meeting.md">
       </div>
-
-      <div id="editorToolbar">
-        <button type="button" title="Bold" onmousedown="event.preventDefault()" onclick="insertMarkdown('**', '**')"><b>B</b></button>
-        <button type="button" title="Italic" onmousedown="event.preventDefault()" onclick="insertMarkdown('*', '*')"><i>I</i></button>
-        <button type="button" title="Heading 1" onmousedown="event.preventDefault()" onclick="insertMarkdown('# ', '')">H1</button>
-        <button type="button" title="Heading 2" onmousedown="event.preventDefault()" onclick="insertMarkdown('## ', '')">H2</button>
-        <button type="button" title="Quote" onmousedown="event.preventDefault()" onclick="insertMarkdown('> ', '')">"</button>
-        <button type="button" title="Code" onmousedown="event.preventDefault()" onclick="insertMarkdown('```\n', '\n```')">{ }</button>
-        <button type="button" title="Link" onmousedown="event.preventDefault()" onclick="insertMarkdown('[', '](https://)')">🔗</button>
-        <button type="button" title="Unordered List" onmousedown="event.preventDefault()" onclick="insertMarkdown('- ', '')">•</button>
-        <button type="button" title="Ordered List" onmousedown="event.preventDefault()" onclick="insertMarkdown('1. ', '')">1.</button>
-        <button type="button" title="Selection to Sticky" onmousedown="event.preventDefault()" onclick="selectionToSticky()">📌</button>
-        <span class="toolbar-separator">|</span>
-        <button type="button" id="livePreviewToggle" title="Toggle Side-by-Side Preview">👁️ Live</button>
-        <button type="button" id="fullPreviewToggle" title="Toggle Full Screen Preview">🖥️ Full View</button>
-      </div>
-
-      <div id="whiteboardToolbar" class="hidden">
-        <button type="button" id="penToolBtn">Pen</button>
-        <button type="button" id="rectToolBtn">Rectangle</button>
-        <button type="button" id="circleToolBtn">Circle</button>
-        <button type="button" id="eraserToolBtn">Eraser</button>
-        <input type="color" id="strokeColorInput" value="#2c3e50">
-        <button type="button" id="placeDrawingAsStickyBtn">Place as Sticky</button>
-      </div>
-      <input type="text" id="pathInput" placeholder="path e.g. work/meeting.md">
       
-      <div id="editorContainer">
-        <textarea id="noteText" placeholder="Your note..."></textarea>
-        <div id="previewArea" class="hidden"></div>
-      </div>
-      
-      <div id="whiteboardArea" class="hidden">
-        <svg id="mainWhiteboardSvg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"></svg>
+      <div id="workspace">
+        <div id="editorContainer">
+          <textarea id="noteText" placeholder="Your note..."></textarea>
+          <div id="previewArea" class="hidden"></div>
+        </div>
+        
+        <div id="whiteboardArea" class="hidden">
+          <svg id="mainWhiteboardSvg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000"></svg>
+        </div>
       </div>
       
       <input type="file" id="imageFileInput" accept="image/*" style="display: none">
@@ -140,11 +160,13 @@
       <div id="drawScreenHeader">
         <button type="button" id="clearDrawBtn" style="color: red; margin-right: auto;">Clear Board</button>
         <div id="modalToolbar">
+          <button type="button" id="modalSelectToolBtn">Select</button>
           <button type="button" id="modalPenToolBtn">Pen</button>
           <button type="button" id="modalRectToolBtn">Rect</button>
           <button type="button" id="modalCircleToolBtn">Circle</button>
           <button type="button" id="modalEraserToolBtn">Eraser</button>
           <input type="color" id="modalStrokeColorInput" value="#2c3e50">
+          <button type="button" id="modalResetCanvasBtn" title="Reset view to center">🏠 Reset</button>
         </div>
         <button type="button" id="saveDrawScreenBtn" style="font-weight: bold;">Save & Close</button>
         <button type="button" id="cancelDrawScreenBtn">Cancel</button>
@@ -184,6 +206,16 @@
 
   <div id="autoCompleteDropdown" class="hidden">
     <ul id="autoCompleteList"></ul>
+  </div>
+
+  <div id="graphModal" class="hidden">
+    <div id="graphContainer">
+      <div id="graphHeader">
+        <h3>Graph View</h3>
+        <button type="button" id="closeGraphBtn">✕</button>
+      </div>
+      <canvas id="graphCanvas"></canvas>
+    </div>
   </div>
 
   <script src="app.js"></script>
